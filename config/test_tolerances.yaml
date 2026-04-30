@@ -1,0 +1,36 @@
+# Numerical tolerances for equivalence tests.
+# Loaded by tests/conftest.py.
+#
+# Rationale documented in docs/equivalence.md.
+
+equivalence:
+  # Same backend (numpy), only API translation -> bit-near.
+  numpy_vs_asrpy:
+    rtol: 1.0e-6
+    atol: 1.0e-8
+
+  # torch on CPU, float64 -> different BLAS, slightly looser.
+  torch_cpu_vs_asrpy:
+    rtol: 1.0e-9
+    atol: 1.0e-10
+
+  # MPS is float32 only; cumulative error across full pipeline.
+  torch_mps_vs_asrpy:
+    rtol: 1.0e-4
+    atol: 1.0e-5
+
+  # CUDA float64 should be equivalent to CPU float64.
+  torch_cuda_vs_asrpy:
+    rtol: 1.0e-9
+    atol: 1.0e-10
+
+  # End-to-end signal correlation check (cleaned signals).
+  signal_correlation_min: 0.999
+
+# Sizes used by benchmarks/.
+benchmark:
+  channels: [32, 64, 128, 256]
+  durations_s: [60, 300, 1800]
+  sfreq: 256
+  warmup_runs: 2
+  measured_runs: 5

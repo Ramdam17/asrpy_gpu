@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# uv / venv
+.venv/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# Build
+build/
+dist/
+*.whl
+
+# Benchmarks: keep code, ignore artefacts
+benchmarks/results/*.csv
+benchmarks/results/*.png
+benchmarks/results/*.npz
+!benchmarks/results/README.md
+!benchmarks/results/.gitkeep
+
+# Data — never commit
+*.fif
+*.set
+*.fdt
+*.eeg
+*.vhdr
+*.vmrk
+*.bdf
+*.edf
+*.xdf
+data/
+sourcedata/
+rawdata/
+derivatives/
