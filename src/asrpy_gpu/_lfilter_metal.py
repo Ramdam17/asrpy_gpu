@@ -77,9 +77,7 @@ def _build_companion_M(A: np.ndarray) -> np.ndarray:
     return M
 
 
-def lfilter_metal(
-    x: np.ndarray, B: np.ndarray, A: np.ndarray
-) -> np.ndarray:
+def lfilter_metal(x: np.ndarray, B: np.ndarray, A: np.ndarray) -> np.ndarray:
     """``scipy.signal.lfilter(B, A, x, axis=-1)`` on the GPU.
 
     For order-8 IIR (length-9 B and A); other orders raise. Returns the
@@ -108,7 +106,9 @@ def lfilter_metal(
     options = Metal.MTLResourceStorageModeShared
 
     # Buffers
-    buf_x = device.newBufferWithBytes_length_options_(x32.tobytes(), x32.nbytes, options)
+    buf_x = device.newBufferWithBytes_length_options_(
+        x32.tobytes(), x32.nbytes, options
+    )
     buf_y = device.newBufferWithLength_options_(x32.nbytes, options)
     elt_bytes = n_chan * T * ELT_FLOATS * 4
     buf_elts = device.newBufferWithLength_options_(elt_bytes, options)

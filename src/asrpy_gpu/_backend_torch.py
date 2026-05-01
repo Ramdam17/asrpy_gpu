@@ -613,7 +613,11 @@ def process(
         # We pre-fetch the trivial_all flag array to CPU once (one sync) and
         # iterate over the numpy view, instead of `.item()`-syncing each
         # iteration. For B≈300 windows that turns 300 mps→cpu syncs into 1.
-        trivial_arr = trivial_all.cpu().numpy() if trivial_all.is_mps or trivial_all.is_cuda else trivial_all.numpy()
+        trivial_arr = (
+            trivial_all.cpu().numpy()
+            if trivial_all.is_mps or trivial_all.is_cuda
+            else trivial_all.numpy()
+        )
         last_n = 0
         for j in range(len(update_at) - 1):
             trivial = bool(trivial_arr[j])
