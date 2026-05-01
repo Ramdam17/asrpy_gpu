@@ -53,39 +53,70 @@ configurations:
 
 ---
 
-## V4 — tile-based memory access deeper (in flight)
+## V4 — outer-exit + batched trivial sync (done)
 
-**Scope.** Take the cache-blocking idea further at very high channel
-counts (n ≥ 256). Candidate ideas:
-- Triangular storage of the symmetric matrix (half the bandwidth).
-- Outer + inner tiling for the col + V updates of the std Jacobi.
-- Mixed-precision accumulation (compute in fp32, accumulate in
-  thread-local fp64-emulated to recover precision at no bandwidth
-  cost).
+**Scope.** Two micro-opts on top of V3:
+- Block Jacobi outer-sweep early-exit (sub_A re-used as reduction
+  scratch; the check is essentially free even when it doesn't trigger).
+- Batched ``trivial_all.cpu()`` before the blending Python loop,
+  replacing 300 per-iteration ``.item()`` MPS→CPU syncs with one.
 
-**Reference.** V3.
-
-**Status.** Profile-gated. The 256ch case still has headroom — the
-double-tile block Jacobi at 18× isn't yet hitting the bandwidth
-ceiling (~30 GB/s short).
+**Result.** +13% on 128 ch × 120 s (15× vs numpy); +5% on 256 ch.
 
 ---
 
-## V5 — lfilter on GPU (parallel-scan IIR) (deferred)
+## V5 — three perf candidates investigated (no shipped gain)
 
-**Scope.** Replace `scipy.signal.lfilter` with a Metal parallel-scan
-IIR (Blelloch up-down sweep on the order-8 transition matrix).
+Three paths tried, none shipped:
 
-**Why deferred.** Profiling shows lfilter accounts for ~3% of the
-runtime in V3. Custom parallel-scan IIR is sensitive to float32
-stability, ~1–2 days of work for a ~3% gain. Will revisit when other
-bottlenecks fall below this threshold.
-
-**Reference.** V3 std `scipy.signal.lfilter` output.
+* **V5.1 — Convergence on real ASR Xcov vs random.** Both regimes
+  converge at the same rate (the Yule-Walker pre-filter spreads energy
+  across the spectrum so eigvals aren't clustered). max_block_sweeps
+  default of 8 stays.
+* **V5.2 — Parallel-scan IIR Metal kernel.** Hillis–Steele scan over
+  (8×8 M, 8-vec c) state-space pairs. Correct (corr 0.99999 first
+  samples). 8–12× **slower** than scipy.signal.lfilter on our problem
+  sizes — order=8 is too small to amortise the per-combine 8×8 matmul
+  against scipy's tight C loop. Code preserved as evidence.
+* **V5.3 — Lanczos eigh prototype (pure torch).** Correct (max abs err
+  vs LAPACK = 1.1e-7). Speed roughly tied with block Jacobi due to
+  Python orchestration of 256 iterations. To win 3–5× on eigh would
+  require writing the whole loop inside a single Metal compute kernel.
 
 ---
 
-## V6 — Riemann CPU reference
+## V6 — pinv-via-solve (hybrid, n ≥ 256) (done)
+
+**Scope.** ``torch.linalg.solve`` is native MPS, beats the block-Jacobi
+inside ``pinv_via_eigh`` by 1.06–1.4× at n ≥ 256. Hybrid dispatch:
+solve for n ≥ 256, eigh for n < 256 (where std-Jacobi inside
+pinv_via_eigh wins by 3–10×).
+
+**Result.** Neutral on the realistic 128/256 ch pipelines (the
+solve advantage at the typical batch sizes saves ~150 ms of a 7.7 s
+pipeline = ~2-3%). Helper kept for future use (CUDA path).
+
+**Tikhonov ε** sweep-validated: `eps=1e-12` (well below float32 noise)
+preserves bit-equivalence with `asrpy`. Looser eps degrades corr
+sharply.
+
+---
+
+## Final state of the perf series
+
+| Config | numpy ref | asrpy_gpu | speedup |
+|---|---|---|---|
+| 128 ch × 120 s | ~13 s | 0.87 s | **15×** |
+| 256 ch × 120 s | ~70-150 s | 7.6 s | **9-20×** |
+
+Diminishing-returns regime reached. Each V from V3 onward gained
+5-15%. The remaining ambitious lever is a **full Metal Lanczos
+kernel** (potential 1.5-2× pipeline speedup, ~1-2 days of focused MSL
+work, deferred).
+
+---
+
+## V7 — Riemann CPU reference (next session)
 
 **Scope.** Add `method="riemann"` to the numpy backend, following
 Blum, S., Jacobsen, N. S. J., Bleichner, M. G., & Debener, S. (2019).
@@ -112,20 +143,22 @@ GPU in V7.
 
 ---
 
-## V7 — Riemann torch+MPS
+## V8 — Riemann torch+MPS
 
-**Scope.** Port V6 to torch+MPS using the same Metal eigh kernel from
+**Scope.** Port V7 to torch+MPS using the same Metal eigh kernel from
 V2 plus matrix exp / log built from `eigh` on SPD matrices.
 
-**Reference.** V6 numpy.
+**Reference.** V7 numpy.
 
 **Milestones.**
-- Riemann torch backend matches V6 numpy at `rtol=1e-4` (MPS float32).
-- Full V1+V2+V3 (Euclid) and V6+V7 (Riemann) matrix of backends green.
+- Riemann torch backend matches V7 numpy at `rtol=1e-4` (MPS float32).
+- Full Euclid (V1–V6) and Riemann (V7+V8) matrix of backends green.
 
 ---
 
-## V8 — torch+CUDA support
+## V9 — torch+CUDA support
+
+(Was V8 in the previous numbering.)
 
 **Scope.** Same code as V7, exposing `device='cuda'` for NVIDIA GPUs
 (lab cluster, Compute Canada). The `_device.resolve_device()` already

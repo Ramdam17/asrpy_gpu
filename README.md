@@ -126,19 +126,27 @@ The torch backend follows two simple rules:
   filtered signal back to the GPU after that. The optional Metal
   kernels eliminate the previous CPU fallback for `eigh` and `pinv`.
 
-Three perf tiers stack:
+Six perf tiers stack:
 
 1. **V1 — torch+MPS baseline.** Batched `torch.linalg.eigh` (CPU
    fallback inside a single call) replaces `asrpy`'s per-window Python
-   loop. Already 6–10× over numpy.
-2. **V2 — pinv-via-eigh + skip-trivial + early-exit.** `pinv(masked) =
-   V diag(1/D⁺) Vᵀ Aᵀ` keeps the second decomposition on the same
-   eigh path; trivial windows skip the reconstruction entirely; the
-   Metal kernel exits as soon as off-diagonals are below tolerance.
+   loop. ~6–10× over numpy.
+2. **V2 — Metal Jacobi kernel + pinv-via-eigh + skip-trivial.** Custom
+   Metal compute kernel for batched symmetric eigh (cyclic parallel
+   Jacobi, per-matrix early-exit). `pinv(masked) = V diag(1/D⁺) Vᵀ Aᵀ`
+   reuses the same kernel. Trivial windows skip the reconstruction.
 3. **V3 — float4 + double-tile block Jacobi.** Row updates use
-   ``float4`` reads/writes; for n ≥ 256 channels, we switch to a
+   ``float4`` reads/writes; for n ≥ 256 channels, switch to a
    double-tiled block Jacobi that keeps the active 2b × 2b sub-matrix
    in 32 KB threadgroup memory.
+4. **V4 — outer-exit + batched trivial sync.** Block-Jacobi outer
+   convergence early-exit; one MPS→CPU sync for the trivial flag
+   instead of one per window.
+5. **V5 — investigations** (no shipped change). Real Xcov vs random,
+   parallel-scan IIR, Lanczos prototype — all measured, none viable.
+6. **V6 — pinv-via-solve hybrid (n ≥ 256).** `torch.linalg.solve` is
+   native MPS and beats the block-Jacobi inside pinv-via-eigh at large
+   n; small-n stays on the Jacobi path.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full perf-first
 versioning and what's still on the table.
@@ -169,14 +177,15 @@ Empirical residuals:
 [`docs/roadmap.md`](docs/roadmap.md). Current state:
 
 ```
-V1  — Euclid + torch+MPS baseline                            done
-V2  — MPS-native eigh + pinv + skip-trivial + early-exit     done
-V3  — float4 + hybrid block Jacobi for n ≥ 256               done
-V4  — tile-based memory access (256ch optim, more)           in flight
-V5  — lfilter on GPU (parallel-scan IIR)                     deferred
-V6  — Riemann CPU reference
-V7  — Riemann torch+MPS
-V8  — torch+CUDA
+V1 — Euclid + torch+MPS baseline                            done
+V2 — Metal Jacobi kernel + pinv-via-eigh + skip-trivial     done
+V3 — float4 + hybrid block Jacobi for n ≥ 256               done
+V4 — outer-exit + batched trivial sync                      done
+V5 — investigations (real Xcov / IIR scan / Lanczos)        no gain shipped
+V6 — pinv-via-solve hybrid for n ≥ 256                      done
+V7 — Riemann CPU reference                                  next
+V8 — Riemann torch+MPS
+V9 — torch+CUDA
 ```
 
 ## License
