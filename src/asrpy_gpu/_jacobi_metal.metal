@@ -86,33 +86,40 @@ kernel void jacobi_eigh_kernel(
             threadgroup_barrier(mem_flags::mem_threadgroup);
 
             // Steps 2-3: apply n_pairs rotations in parallel.
-            // Work is indexed by (i, k): pair i, column k. We have
-            // n_pairs * n total work items per row-side step. Distribute
-            // across the full threadgroup using a strided loop.
             //
             // Pairs in a round are non-overlapping in indices, so all
             // updates are independent and safe to do without synchronisation
             // *within* the same step. We do still need a barrier between
             // row-side and column-side because the column-side reads what
             // row-side has just written.
-            uint total_row_work = n_pairs * n;
-            for (uint w = tid; w < total_row_work; w += tg_size) {
-                uint i = w / n;
-                uint k = w % n;
+            //
+            // ROW updates are float4-vectorised: a row's elements are
+            // contiguous in row-major storage, so 4 consecutive columns
+            // can be loaded/stored as one 16-byte transaction. n must be
+            // a multiple of 4 (true for our use cases: 32, 64, 128, 256).
+            device float4* A4 = (device float4*)A;
+            uint n4 = n / 4;
+            uint total_row_work_v = n_pairs * n4;
+            for (uint w = tid; w < total_row_work_v; w += tg_size) {
+                uint i = w / n4;
+                uint k4 = w % n4;
                 int p = schedule[r * n_pairs * 2 + i * 2 + 0];
                 if (p < 0) continue;
                 int q = schedule[r * n_pairs * 2 + i * 2 + 1];
                 float c = shared_cs[i * 2 + 0];
                 float s = shared_cs[i * 2 + 1];
-                float a_pk = A[p * n + k];
-                float a_qk = A[q * n + k];
-                A[p * n + k] = c * a_pk - s * a_qk;
-                A[q * n + k] = s * a_pk + c * a_qk;
+                float4 a_p = A4[p * n4 + k4];
+                float4 a_q = A4[q * n4 + k4];
+                A4[p * n4 + k4] = c * a_p - s * a_q;
+                A4[q * n4 + k4] = s * a_p + c * a_q;
             }
             threadgroup_barrier(mem_flags::mem_device);
 
-            // Column-side rotations on A and V. Same indexing scheme.
-            for (uint w = tid; w < total_row_work; w += tg_size) {
+            // Column-side rotations on A and V.
+            // Cannot float4-vectorise: columns are stride-n in row-major,
+            // not contiguous. Stays scalar.
+            uint total_col_work = n_pairs * n;
+            for (uint w = tid; w < total_col_work; w += tg_size) {
                 uint i = w / n;
                 uint k = w % n;
                 int p = schedule[r * n_pairs * 2 + i * 2 + 0];

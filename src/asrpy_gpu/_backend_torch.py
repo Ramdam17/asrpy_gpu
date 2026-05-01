@@ -517,7 +517,6 @@ def process(
         D_all, V_all = _eigh_native_or_cpu(Xcov)  # (W, C), (W, C, C)
 
         # keep[w, c] = (D[w, c] < sum((T @ V)^2 along axis=0))
-        # axis=0 in numpy means rows of (T @ V), i.e. the channel axis -> sum over C
         TV = T_t @ V_all  # (W, C, C)
         thresh = (TV**2).sum(dim=1)  # (W, C)
         idx_C = torch.arange(n_channels, device=device).unsqueeze(0)
@@ -526,14 +525,14 @@ def process(
         trivial_all = keep.all(dim=1)  # (W,)
 
         # Skip-trivial optimisation: we only need to compute R for windows
-        # where keep is NOT all True. For typical resting-EEG signals
-        # most windows are trivial, so this avoids the bulk of the
-        # eigh + pinv work on those windows.
+        # where keep is NOT all True.
         non_trivial = ~trivial_all
         n_windows = D_all.shape[0]
 
         # Default R = I for every window.
-        R_all = eye_C.unsqueeze(0).expand(n_windows, n_channels, n_channels).contiguous()
+        R_all = eye_C.unsqueeze(0).expand(
+            n_windows, n_channels, n_channels
+        ).contiguous()
 
         if non_trivial.any():
             nt_idx = non_trivial.nonzero(as_tuple=False).squeeze(-1)
