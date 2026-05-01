@@ -265,7 +265,5 @@ class ASR:
         X_clean = X_clean[:, lookahead_samples:]
 
         out = raw.copy()
-        out.apply_function(
-            lambda _x: X_clean, picks=picks, channel_wise=False
-        )
+        out.apply_function(lambda _x: X_clean, picks=picks, channel_wise=False)
         return out

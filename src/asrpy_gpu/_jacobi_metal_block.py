@@ -185,20 +185,34 @@ def jacobi_eigh_block(
     buf_V = device.newBufferWithLength_options_(nb, options)
     buf_block_sched = device.newBufferWithBytes_length_options_(
         np.ascontiguousarray(block_sched).tobytes(),
-        block_sched.nbytes, options,
+        block_sched.nbytes,
+        options,
     )
     buf_sub_sched = device.newBufferWithBytes_length_options_(
         np.ascontiguousarray(sub_sched).tobytes(),
-        sub_sched.nbytes, options,
+        sub_sched.nbytes,
+        options,
     )
 
     buf_n = device.newBufferWithBytes_length_options_(struct.pack("I", n), 4, options)
-    buf_nb_blocks = device.newBufferWithBytes_length_options_(struct.pack("I", num_blocks), 4, options)
-    buf_max_bs = device.newBufferWithBytes_length_options_(struct.pack("I", max_block_sweeps), 4, options)
-    buf_b_rounds = device.newBufferWithBytes_length_options_(struct.pack("I", b_rounds), 4, options)
-    buf_b_pairs = device.newBufferWithBytes_length_options_(struct.pack("I", b_pairs), 4, options)
-    buf_tol = device.newBufferWithBytes_length_options_(struct.pack("f", tol_abs), 4, options)
-    buf_max_is = device.newBufferWithBytes_length_options_(struct.pack("I", max_inner_sweeps), 4, options)
+    buf_nb_blocks = device.newBufferWithBytes_length_options_(
+        struct.pack("I", num_blocks), 4, options
+    )
+    buf_max_bs = device.newBufferWithBytes_length_options_(
+        struct.pack("I", max_block_sweeps), 4, options
+    )
+    buf_b_rounds = device.newBufferWithBytes_length_options_(
+        struct.pack("I", b_rounds), 4, options
+    )
+    buf_b_pairs = device.newBufferWithBytes_length_options_(
+        struct.pack("I", b_pairs), 4, options
+    )
+    buf_tol = device.newBufferWithBytes_length_options_(
+        struct.pack("f", tol_abs), 4, options
+    )
+    buf_max_is = device.newBufferWithBytes_length_options_(
+        struct.pack("I", max_inner_sweeps), 4, options
+    )
 
     # Threadgroup memory: sub_A + sub_Q + sub_cs + off_sum
     SUB_DIM = 2 * BLOCK_SIZE
@@ -233,8 +247,16 @@ def jacobi_eigh_block(
     cmd.commit()
     cmd.waitUntilCompleted()
 
-    a_out = np.frombuffer(buf_A.contents().as_buffer(nb), dtype=np.float32).copy().reshape(B, n, n)
-    v_out = np.frombuffer(buf_V.contents().as_buffer(nb), dtype=np.float32).copy().reshape(B, n, n)
+    a_out = (
+        np.frombuffer(buf_A.contents().as_buffer(nb), dtype=np.float32)
+        .copy()
+        .reshape(B, n, n)
+    )
+    v_out = (
+        np.frombuffer(buf_V.contents().as_buffer(nb), dtype=np.float32)
+        .copy()
+        .reshape(B, n, n)
+    )
 
     D = np.diagonal(a_out, axis1=-2, axis2=-1).copy()
     sort_idx = np.argsort(D, axis=-1)

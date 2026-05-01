@@ -71,8 +71,7 @@ def resolve_device(backend: str = "auto") -> tuple[str, str]:
         return "numpy", "cpu"
 
     raise ValueError(
-        f"Unknown backend {backend!r}. Expected one of "
-        "{'auto', 'numpy', 'torch'}."
+        f"Unknown backend {backend!r}. Expected one of {{'auto', 'numpy', 'torch'}}."
     )
 
 

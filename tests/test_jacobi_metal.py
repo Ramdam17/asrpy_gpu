@@ -21,7 +21,7 @@ def _make_spd(B: int | None, n: int, *, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     if B is None:
         A = rng.standard_normal((n, n)).astype(np.float32)
-        A = (A @ A.T + 1e-3 * np.eye(n, dtype=np.float32))
+        A = A @ A.T + 1e-3 * np.eye(n, dtype=np.float32)
     else:
         A = rng.standard_normal((B, n, n)).astype(np.float32)
         A = A @ np.swapaxes(A, -2, -1) + 1e-3 * np.eye(n, dtype=np.float32)[None]
@@ -47,17 +47,15 @@ def _check_eigh(A: np.ndarray, D: np.ndarray, V: np.ndarray, *, atol_rel=2e-3):
         assert err < atol_rel, f"||AV - VD|| / ||A|| = {err:.3e}"
         # Orthogonality
         VVt = V @ V.T
-        np.testing.assert_allclose(
-            VVt, np.eye(V.shape[0], dtype=V.dtype), atol=1e-3
-        )
+        np.testing.assert_allclose(VVt, np.eye(V.shape[0], dtype=V.dtype), atol=1e-3)
     else:
         AV = np.einsum("bij,bjk->bik", A, V)
         VD = V * D[:, None, :]
         err = np.abs(AV - VD).max() / np.abs(A).max()
         assert err < atol_rel, f"||AV - VD|| / ||A|| = {err:.3e}"
         VVt = np.einsum("bij,bjk->bik", V, np.swapaxes(V, -2, -1))
-        I = np.eye(V.shape[-1], dtype=V.dtype)[None]
-        np.testing.assert_allclose(VVt, np.broadcast_to(I, V.shape), atol=1e-3)
+        eye = np.eye(V.shape[-1], dtype=V.dtype)[None]
+        np.testing.assert_allclose(VVt, np.broadcast_to(eye, V.shape), atol=1e-3)
 
 
 def test_metal_eigh_unbatched():

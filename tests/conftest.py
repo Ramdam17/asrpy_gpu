@@ -121,9 +121,7 @@ def eeglab_raw() -> mne.io.Raw:
 # ---------------------------------------------------------------------------
 
 
-needs_torch = pytest.mark.skipif(
-    not TORCH_AVAILABLE, reason="torch not installed"
-)
+needs_torch = pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
 needs_mps = pytest.mark.skipif(
     not MPS_AVAILABLE, reason="MPS not available on this host"
 )

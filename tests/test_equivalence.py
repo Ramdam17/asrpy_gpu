@@ -10,10 +10,13 @@ from asrpy_gpu import _backend_numpy as bn
 from .conftest import needs_mps, needs_torch
 from .reference.asrpy_reference import (
     asr_calibrate as ref_calibrate,
+)
+from .reference.asrpy_reference import (
     asr_process as ref_process,
+)
+from .reference.asrpy_reference import (
     clean_windows as ref_clean_windows,
 )
-
 
 # ---------------------------------------------------------------------------
 # Numpy backend — should be bit-near asrpy
@@ -26,7 +29,8 @@ def test_numpy_clean_windows_matches_asrpy(synthetic_data, tolerances):
     assert cw_ours.shape == cw_ref.shape
     np.testing.assert_array_equal(m_ours, m_ref)
     np.testing.assert_allclose(
-        cw_ours, cw_ref,
+        cw_ours,
+        cw_ref,
         rtol=tolerances["numpy_vs_asrpy"]["rtol"],
         atol=tolerances["numpy_vs_asrpy"]["atol"],
     )
@@ -36,7 +40,8 @@ def test_numpy_calibrate_matches_asrpy(synthetic_data, tolerances):
     M_ours, T_ours = bn.calibrate(synthetic_data, sfreq=256.0)
     M_ref, T_ref = ref_calibrate(synthetic_data, sfreq=256.0)
     np.testing.assert_allclose(
-        M_ours, M_ref,
+        M_ours,
+        M_ref,
         rtol=tolerances["numpy_vs_asrpy"]["rtol"],
         atol=tolerances["numpy_vs_asrpy"]["atol"],
     )
@@ -52,7 +57,8 @@ def test_numpy_process_matches_asrpy(synthetic_data, tolerances):
     clean_ours = bn.process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref)
     clean_ref = ref_process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref)
     np.testing.assert_allclose(
-        clean_ours, clean_ref,
+        clean_ours,
+        clean_ref,
         rtol=tolerances["numpy_vs_asrpy"]["rtol"],
         atol=tolerances["numpy_vs_asrpy"]["atol"],
     )
@@ -68,10 +74,12 @@ def test_numpy_process_matches_asrpy(synthetic_data, tolerances):
 @needs_torch
 def test_torch_cpu_calibrate_matches_asrpy(synthetic_data, tolerances):
     from asrpy_gpu import _backend_torch as bt
+
     M_ours, _ = bt.calibrate(synthetic_data, sfreq=256.0, device="cpu")
     M_ref, _ = ref_calibrate(synthetic_data, sfreq=256.0)
     np.testing.assert_allclose(
-        M_ours, M_ref,
+        M_ours,
+        M_ref,
         rtol=tolerances["torch_cpu_vs_asrpy"]["rtol"],
         atol=tolerances["torch_cpu_vs_asrpy"]["atol"],
     )
@@ -80,13 +88,13 @@ def test_torch_cpu_calibrate_matches_asrpy(synthetic_data, tolerances):
 @needs_torch
 def test_torch_cpu_process_matches_asrpy(synthetic_data, tolerances):
     from asrpy_gpu import _backend_torch as bt
+
     M_ref, T_ref = ref_calibrate(synthetic_data, sfreq=256.0)
-    clean_ours = bt.process(
-        synthetic_data, sfreq=256.0, M=M_ref, T=T_ref, device="cpu"
-    )
+    clean_ours = bt.process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref, device="cpu")
     clean_ref = ref_process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref)
     np.testing.assert_allclose(
-        clean_ours, clean_ref,
+        clean_ours,
+        clean_ref,
         rtol=tolerances["torch_cpu_vs_asrpy"]["rtol"],
         atol=tolerances["torch_cpu_vs_asrpy"]["atol"],
     )
@@ -97,13 +105,13 @@ def test_torch_cpu_process_matches_asrpy(synthetic_data, tolerances):
 def test_torch_mps_process_matches_asrpy(synthetic_data, tolerances):
     """MPS uses float32; tolerance is looser per docs/equivalence.md."""
     from asrpy_gpu import _backend_torch as bt
+
     M_ref, T_ref = ref_calibrate(synthetic_data, sfreq=256.0)
-    clean_ours = bt.process(
-        synthetic_data, sfreq=256.0, M=M_ref, T=T_ref, device="mps"
-    )
+    clean_ours = bt.process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref, device="mps")
     clean_ref = ref_process(synthetic_data, sfreq=256.0, M=M_ref, T=T_ref)
     np.testing.assert_allclose(
-        clean_ours, clean_ref,
+        clean_ours,
+        clean_ref,
         rtol=tolerances["torch_mps_vs_asrpy"]["rtol"],
         atol=tolerances["torch_mps_vs_asrpy"]["atol"],
     )
@@ -130,12 +138,14 @@ def test_numpy_matches_asrpy_on_eeglab(eeglab_raw, tolerances):
     clean_ours = bn.process(X, sfreq=sfreq, M=M_ref, T=T_ref)
 
     np.testing.assert_allclose(
-        M_ours, M_ref,
+        M_ours,
+        M_ref,
         rtol=tolerances["numpy_vs_asrpy"]["rtol"],
         atol=tolerances["numpy_vs_asrpy"]["atol"],
     )
     np.testing.assert_allclose(
-        clean_ours, clean_ref,
+        clean_ours,
+        clean_ref,
         rtol=tolerances["numpy_vs_asrpy"]["rtol"],
         atol=tolerances["numpy_vs_asrpy"]["atol"],
     )

@@ -123,9 +123,7 @@ def calibrate(
     sig = np.zeros(n_channels)
     for ichan in reversed(range(n_channels)):
         rms = x[ichan, :] ** 2
-        Y = np.array(
-            [np.sqrt(np.sum(rms[o : o + N]) / N) for o in offsets]
-        )
+        Y = np.array([np.sqrt(np.sum(rms[o : o + N]) / N) for o in offsets])
         mu[ichan], sig[ichan], _, _ = _fit_eeg_distribution(
             Y, min_clean_fraction, max_dropout_fraction
         )
@@ -197,9 +195,7 @@ def process(
         maxdims = np.round(len(data) * maxdims)
 
     if Zi is None:
-        _, Zi = _yulewalk_filter(
-            data, ab=ab, sfreq=sfreq, zi=np.ones([len(data), 8])
-        )
+        _, Zi = _yulewalk_filter(data, ab=ab, sfreq=sfreq, zi=np.ones([len(data), 8]))
 
     n_channels, n_samples = data.shape
     N = np.round(win_len * sfreq).astype(int)
@@ -275,9 +271,9 @@ def process(
                 blend_x = np.pi * np.arange(1, n - last_n + 1) / (n - last_n)
                 blend = (1 - np.cos(blend_x)) / 2
                 tmp = data[:, subrange]
-                data[:, subrange] = np.multiply(
-                    blend, R_out @ tmp
-                ) + np.multiply(1 - blend, last_R @ tmp)
+                data[:, subrange] = np.multiply(blend, R_out @ tmp) + np.multiply(
+                    1 - blend, last_R @ tmp
+                )
 
             last_n, last_R, last_trivial = n, R_out, trivial
 
@@ -321,9 +317,7 @@ def clean_windows(
 
     n_channels, n_samples = X.shape
     N = int(win_len * sfreq)
-    offsets = np.int_(
-        np.round(np.arange(0, n_samples - N, N * (1 - win_overlap)))
-    )
+    offsets = np.int_(np.round(np.arange(0, n_samples - N, N * (1 - win_overlap))))
 
     wz = np.zeros((n_channels, len(offsets)))
     for ichan in range(n_channels):
@@ -356,7 +350,9 @@ def clean_windows(
     for w in removed_wins:
         sample_maskidx.append(np.arange(offsets[w], offsets[w] + N))
     sample_mask2remove = (
-        np.unique(np.concatenate(sample_maskidx)) if sample_maskidx else np.array([], dtype=int)
+        np.unique(np.concatenate(sample_maskidx))
+        if sample_maskidx
+        else np.array([], dtype=int)
     )
 
     if sample_mask2remove.size:
@@ -384,7 +380,7 @@ def _fit_eeg_distribution(
     max_dropout_fraction: float = 0.1,
     fit_quantiles: tuple[float, float] = (0.022, 0.6),
     step_sizes: tuple[float, float] = (0.01, 0.01),
-    shape_range: np.ndarray = np.arange(1.7, 3.5, 0.15),
+    shape_range: np.ndarray = np.arange(1.7, 3.5, 0.15),  # noqa: B008  asrpy default
 ) -> tuple[float, float, float, float]:
     """Estimate (mu, sig, alpha, beta) of clean EEG amplitude distribution.
 
@@ -398,9 +394,7 @@ def _fit_eeg_distribution(
     zbounds: list[np.ndarray] = []
     rescale: list[float] = []
     for b in range(len(shape_range)):
-        gam = gammaincinv(
-            1 / shape_range[b], np.sign(quants - 0.5) * (2 * quants - 1)
-        )
+        gam = gammaincinv(1 / shape_range[b], np.sign(quants - 0.5) * (2 * quants - 1))
         zbounds.append(np.sign(quants - 0.5) * gam ** (1 / shape_range[b]))
         rescale.append(shape_range[b] / (2 * gamma(1 / shape_range[b])))
 
@@ -426,9 +420,7 @@ def _fit_eeg_distribution(
     opt_lu: list[float] = [np.inf, np.inf]
     opt_bounds: np.ndarray = np.array([np.inf, np.inf])
     opt_beta: float = np.inf
-    gridsearch = np.round(
-        n * np.arange(max_width, min_width, -step_sizes[1])
-    )
+    gridsearch = np.round(n * np.arange(max_width, min_width, -step_sizes[1]))
     for m in gridsearch.astype(int):
         mcurr = m - 1
         nbins = int(np.round(3 * np.log2(1 + m / 2)))
@@ -447,7 +439,7 @@ def _fit_eeg_distribution(
             bounds = zbounds[k]
             bounds_width = float(bounds[1] - bounds[0])
             x = bounds[0] + np.arange(0.5, nbins + 0.5) / nbins * bounds_width
-            p = np.exp(-np.abs(x) ** shape_range[k]) * rescale[k]
+            p = np.exp(-(np.abs(x) ** shape_range[k])) * rescale[k]
             p = p / np.sum(p)
 
             kl = np.sum(p * (np.log(p) - logq[:-1, :].T), axis=1) + np.log(m)
@@ -466,7 +458,9 @@ def _fit_eeg_distribution(
     return float(mu), float(sig), float(alpha), float(beta)
 
 
-def _yulewalk(order: int, F: np.ndarray, M: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _yulewalk(
+    order: int, F: np.ndarray, M: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """Recursive least-squares filter design (Yule-Walker).
 
     Port of ``asrpy.asr_utils.yulewalk``. Reference: Friedlander & Porat,
@@ -677,9 +671,7 @@ def _block_covariance(data: np.ndarray, window: int = 128) -> np.ndarray:
     U = np.zeros([n_blocks, n_ch * n_ch])
     data_T = data.T
     for k in range(window):
-        idx_range = np.minimum(
-            n_times - 1, np.arange(k, n_times + k - 2, window)
-        )
+        idx_range = np.minimum(n_times - 1, np.arange(k, n_times + k - 2, window))
         U = U + np.reshape(
             data_T[idx_range].reshape([-1, 1, n_ch])
             * data_T[idx_range].reshape(-1, n_ch, 1),

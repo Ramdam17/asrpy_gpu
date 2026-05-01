@@ -21,12 +21,12 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-groups --extra torch
 
       - name: Lint with ruff
         run: |
           uv run ruff check .
           uv run ruff format --check .
 
-      - name: Run tests (numpy backend only on CI; MPS / CUDA tests are skipped)
-        run: uv run pytest -v -m "not mps and not cuda"
+      - name: Run tests (MPS / CUDA / Metal tests are skipped on Linux)
+        run: uv run pytest -v -m "not mps and not cuda and not slow"

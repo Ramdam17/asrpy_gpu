@@ -44,8 +44,7 @@ def _build_state():
     """Compile the kernel and create a command queue (called once)."""
     if not METAL_AVAILABLE:
         raise RuntimeError(
-            "pyobjc-framework-Metal is not installed; "
-            "Metal kernel path unavailable."
+            "pyobjc-framework-Metal is not installed; Metal kernel path unavailable."
         )
 
     device = Metal.MTLCreateSystemDefaultDevice()
@@ -54,9 +53,7 @@ def _build_state():
 
     source = _KERNEL_SOURCE_PATH.read_text()
     options = Metal.MTLCompileOptions.new()
-    library, err = device.newLibraryWithSource_options_error_(
-        source, options, None
-    )
+    library, err = device.newLibraryWithSource_options_error_(source, options, None)
     if err is not None:
         raise RuntimeError(f"Metal compilation failed: {err}")
 
@@ -172,9 +169,7 @@ def jacobi_eigh(
     buf_sched = device.newBufferWithBytes_length_options_(
         sched_buf.tobytes(), sched_buf.nbytes, options
     )
-    buf_n = device.newBufferWithBytes_length_options_(
-        struct.pack("I", n), 4, options
-    )
+    buf_n = device.newBufferWithBytes_length_options_(struct.pack("I", n), 4, options)
     buf_max_sweeps = device.newBufferWithBytes_length_options_(
         struct.pack("I", max_sweeps), 4, options
     )
@@ -231,22 +226,28 @@ def jacobi_eigh(
 
     # Copy results back. as_buffer() exposes the MTLBuffer contents as a
     # python buffer-protocol object; np.frombuffer wraps it cheaply.
-    a_out = np.frombuffer(
-        buf_A.contents().as_buffer(A_buf_in.nbytes),
-        dtype=np.float32,
-    ).copy().reshape(B, n, n)
-    v_out = np.frombuffer(
-        buf_V.contents().as_buffer(V_buf_out.nbytes),
-        dtype=np.float32,
-    ).copy().reshape(B, n, n)
+    a_out = (
+        np.frombuffer(
+            buf_A.contents().as_buffer(A_buf_in.nbytes),
+            dtype=np.float32,
+        )
+        .copy()
+        .reshape(B, n, n)
+    )
+    v_out = (
+        np.frombuffer(
+            buf_V.contents().as_buffer(V_buf_out.nbytes),
+            dtype=np.float32,
+        )
+        .copy()
+        .reshape(B, n, n)
+    )
 
     # Eigenvalues = diagonal of A; sort ascending and reorder V columns.
     D = np.diagonal(a_out, axis1=-2, axis2=-1).copy()
     sort_idx = np.argsort(D, axis=-1)
     D_sorted = np.take_along_axis(D, sort_idx, axis=-1)
-    V_sorted = np.take_along_axis(
-        v_out, sort_idx[:, None, :], axis=-1
-    )
+    V_sorted = np.take_along_axis(v_out, sort_idx[:, None, :], axis=-1)
 
     if squeeze_out:
         return D_sorted[0], V_sorted[0]

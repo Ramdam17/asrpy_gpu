@@ -63,9 +63,7 @@ def _torch_dtype_for(device: str) -> torch.dtype:
     return torch.float32 if device == "mps" else torch.float64
 
 
-def _to_torch(
-    arr: np.ndarray, *, device: str, dtype: torch.dtype
-) -> torch.Tensor:
+def _to_torch(arr: np.ndarray, *, device: str, dtype: torch.dtype) -> torch.Tensor:
     return torch.as_tensor(arr, dtype=dtype, device=device)
 
 
@@ -157,6 +155,7 @@ def _eigh_jacobi_metal_strategy(
 
     if n >= 256 and n % SUB_DIM == 0:
         from ._jacobi_metal_block import jacobi_eigh_block
+
         D_np, V_np = jacobi_eigh_block(A_np)
     else:
         D_np, V_np = metal_eigh(A_np)
@@ -185,9 +184,7 @@ def _eigh_native_or_cpu(
     raise RuntimeError(f"Unknown eigh strategy {strategy!r}")
 
 
-def pinv_via_eigh(
-    A: torch.Tensor, *, rcond: float | None = None
-) -> torch.Tensor:
+def pinv_via_eigh(A: torch.Tensor, *, rcond: float | None = None) -> torch.Tensor:
     """Moore-Penrose pseudoinverse of square ``A`` via eigh of ``A.T @ A``.
 
     For a square matrix ``A`` (potentially rank-deficient),
@@ -232,7 +229,9 @@ def pinv_via_eigh(
 
     # tol per-batch = rcond * max(D, dim=-1)
     tol = rcond * D.amax(dim=-1, keepdim=True)
-    D_inv = torch.where(D > tol, 1.0 / D.clamp(min=torch.finfo(A.dtype).tiny), torch.zeros_like(D))
+    D_inv = torch.where(
+        D > tol, 1.0 / D.clamp(min=torch.finfo(A.dtype).tiny), torch.zeros_like(D)
+    )
 
     # pinv = V diag(D_inv) Vᵀ Aᵀ
     return V @ (D_inv.unsqueeze(-1) * V.transpose(-2, -1)) @ A.transpose(-2, -1)
@@ -255,9 +254,7 @@ def _sqrtm_spd_torch(A: torch.Tensor) -> torch.Tensor:
     return V @ torch.diag(torch.sqrt(D)) @ V.T
 
 
-def _block_covariance_torch(
-    data: torch.Tensor, window: int
-) -> torch.Tensor:
+def _block_covariance_torch(data: torch.Tensor, window: int) -> torch.Tensor:
     """GPU port of :func:`asrpy_gpu._backend_numpy._block_covariance`.
 
     Returns a tensor of shape ``(n_blocks, n_channels**2)``.
@@ -265,9 +262,7 @@ def _block_covariance_torch(
     n_ch, n_times = data.shape
     n_blocks = len(np.arange(0, n_times - 1, window))
 
-    U = torch.zeros(
-        (n_blocks, n_ch * n_ch), dtype=data.dtype, device=data.device
-    )
+    U = torch.zeros((n_blocks, n_ch * n_ch), dtype=data.dtype, device=data.device)
     data_T = data.T  # (n_times, n_ch)
 
     for k in range(window):
@@ -407,24 +402,18 @@ def calibrate(
     abs_proj = (V_t.T @ X_t).abs()  # (n_channels, n_samples)
     abs_proj_np = _to_numpy(abs_proj)  # back to CPU for fit_eeg_distribution
 
-    offsets = np.int_(
-        np.arange(0, n_samples - N, np.round(N * (1 - win_overlap)))
-    )
+    offsets = np.int_(np.arange(0, n_samples - N, np.round(N * (1 - win_overlap))))
     mu = np.zeros(n_channels)
     sig = np.zeros(n_channels)
     for ichan in reversed(range(n_channels)):
         rms = abs_proj_np[ichan, :] ** 2
-        Y = np.array(
-            [np.sqrt(np.sum(rms[o : o + N]) / N) for o in offsets]
-        )
+        Y = np.array([np.sqrt(np.sum(rms[o : o + N]) / N) for o in offsets])
         mu[ichan], sig[ichan], _, _ = _np_backend._fit_eeg_distribution(
             Y, min_clean_fraction, max_dropout_fraction
         )
 
     # T = diag(mu + cutoff * sig) @ V.T  — back on CPU as float64 for return.
-    diag_t = torch.as_tensor(
-        mu + cutoff * sig, dtype=dtype, device=device
-    )
+    diag_t = torch.as_tensor(mu + cutoff * sig, dtype=dtype, device=device)
     T_t = torch.diag(diag_t) @ V_t.T
 
     return _to_numpy(M_t), _to_numpy(T_t)
@@ -496,18 +485,14 @@ def process(
         )
 
         # Yule-Walker filter on CPU (sequential).
-        chunk_np = data_t[:, i_range + P].detach().to("cpu").numpy().astype(
-            np.float64
-        )
+        chunk_np = data_t[:, i_range + P].detach().to("cpu").numpy().astype(np.float64)
         X_filt_np, Zi = _np_backend._yulewalk_filter(
             chunk_np, sfreq=sfreq, zi=Zi, ab=ab, axis=-1
         )
         X = _to_torch(X_filt_np, device=device, dtype=dtype)
 
         # Outer-product time series.
-        XX = (X.unsqueeze(0) * X.unsqueeze(1)).reshape(
-            n_channels * n_channels, -1
-        )
+        XX = (X.unsqueeze(0) * X.unsqueeze(1)).reshape(n_channels * n_channels, -1)
         Xcov_flat, cov_t = _ma_filter_torch(N, XX, cov_t)
 
         update_at = np.arange(stepsize, Xcov_flat.shape[-1] + stepsize - 2, stepsize)
@@ -544,16 +529,16 @@ def process(
         n_windows = D_all.shape[0]
 
         # Default R = I for every window.
-        R_all = eye_C.unsqueeze(0).expand(
-            n_windows, n_channels, n_channels
-        ).contiguous()
+        R_all = (
+            eye_C.unsqueeze(0).expand(n_windows, n_channels, n_channels).contiguous()
+        )
 
         if non_trivial.any():
             nt_idx = non_trivial.nonzero(as_tuple=False).squeeze(-1)
-            keep_nt = keep[nt_idx]                       # (W_nt, C)
-            V_nt = V_all[nt_idx]                         # (W_nt, C, C)
-            VtM_nt = V_nt.transpose(-2, -1) @ M_t        # (W_nt, C, C)
-            masked_nt = keep_nt.unsqueeze(-1) * VtM_nt   # (W_nt, C, C)
+            keep_nt = keep[nt_idx]  # (W_nt, C)
+            V_nt = V_all[nt_idx]  # (W_nt, C, C)
+            VtM_nt = V_nt.transpose(-2, -1) @ M_t  # (W_nt, C, C)
+            masked_nt = keep_nt.unsqueeze(-1) * VtM_nt  # (W_nt, C, C)
 
             if device == "mps":
                 pinv_nt = pinv_via_eigh(masked_nt)
@@ -577,9 +562,7 @@ def process(
                 blend = _to_torch(blend_np, device=device, dtype=dtype)
 
                 tmp = data_t[:, subrange]
-                data_t[:, subrange] = (
-                    blend * (R_j @ tmp) + (1 - blend) * (last_R @ tmp)
-                )
+                data_t[:, subrange] = blend * (R_j @ tmp) + (1 - blend) * (last_R @ tmp)
 
             last_n, last_R, last_trivial, R_out = n, R_j, trivial, R_j
 

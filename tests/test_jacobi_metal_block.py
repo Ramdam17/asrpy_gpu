@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
 from asrpy_gpu._jacobi_metal import METAL_AVAILABLE
 
@@ -45,8 +44,8 @@ def _check_eigh(A: np.ndarray, D: np.ndarray, V: np.ndarray, *, atol_rel=2e-4):
     assert err < atol_rel, f"||AV - VD|| / ||A|| = {err:.3e}"
     if A.ndim == 3:
         VVt = np.einsum("bij,bjk->bik", V, np.swapaxes(V, -2, -1))
-        I = np.eye(V.shape[-1], dtype=V.dtype)[None]
-        np.testing.assert_allclose(VVt, np.broadcast_to(I, V.shape), atol=2e-3)
+        eye = np.eye(V.shape[-1], dtype=V.dtype)[None]
+        np.testing.assert_allclose(VVt, np.broadcast_to(eye, V.shape), atol=2e-3)
 
 
 def test_block_jacobi_n64():

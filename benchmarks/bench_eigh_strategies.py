@@ -74,8 +74,10 @@ def main() -> None:
     strategies_small = strategies + ["jacobi_torch"]
 
     print("=" * 90)
-    print(f"{'channels':>8} {'duration':>10} {'strategy':>15} "
-          f"{'time (s)':>10} {'vs cpu_fallback':>18} {'max abs vs CPU':>18}")
+    print(
+        f"{'channels':>8} {'duration':>10} {'strategy':>15} "
+        f"{'time (s)':>10} {'vs cpu_fallback':>18} {'max abs vs CPU':>18}"
+    )
     print("-" * 90)
 
     rows: list[dict] = []

@@ -16,11 +16,10 @@ change the algorithm. Verified line-for-line against
 
 from __future__ import annotations
 
-import numpy as np
-from scipy.special import gamma, gammaincinv
-
 import asrpy
 import asrpy.asr_utils as _asr_utils
+import numpy as np
+from scipy.special import gamma, gammaincinv
 
 
 def _patched_fit_eeg_distribution(  # noqa: PLR0913
@@ -29,7 +28,7 @@ def _patched_fit_eeg_distribution(  # noqa: PLR0913
     max_dropout_fraction=0.1,
     fit_quantiles=(0.022, 0.6),
     step_sizes=(0.01, 0.01),
-    shape_range=np.arange(1.7, 3.5, 0.15),
+    shape_range=np.arange(1.7, 3.5, 0.15),  # noqa: B008  asrpy default
 ):
     """Numpy-2 compatible re-implementation, byte-equivalent to asrpy."""
     X = np.sort(X)
@@ -39,9 +38,7 @@ def _patched_fit_eeg_distribution(  # noqa: PLR0913
     zbounds: list[np.ndarray] = []
     rescale: list[float] = []
     for b in range(len(shape_range)):
-        gam = gammaincinv(
-            1 / shape_range[b], np.sign(quants - 0.5) * (2 * quants - 1)
-        )
+        gam = gammaincinv(1 / shape_range[b], np.sign(quants - 0.5) * (2 * quants - 1))
         zbounds.append(np.sign(quants - 0.5) * gam ** (1 / shape_range[b]))
         rescale.append(shape_range[b] / (2 * gamma(1 / shape_range[b])))
 
@@ -86,7 +83,7 @@ def _patched_fit_eeg_distribution(  # noqa: PLR0913
             bounds = zbounds[k]
             bounds_width = float(bounds[1] - bounds[0])
             x = bounds[0] + np.arange(0.5, nbins + 0.5) / nbins * bounds_width
-            p = np.exp(-np.abs(x) ** shape_range[k]) * rescale[k]
+            p = np.exp(-(np.abs(x) ** shape_range[k])) * rescale[k]
             p = p / np.sum(p)
 
             kl = np.sum(p * (np.log(p) - logq[:-1, :].T), axis=1) + np.log(m)

@@ -34,7 +34,7 @@ def test_tournament_pairs_covers_all_pairs():
         assert len(rounds) == n - 1, f"expected {n - 1} rounds, got {len(rounds)}"
         seen = set()
         for rnd in rounds:
-            assert len(rnd) == n // 2, f"each round must have n/2 pairs"
+            assert len(rnd) == n // 2, "each round must have n/2 pairs"
             # Within a round: indices must be unique (non-overlapping rotations)
             flat = [i for pair in rnd for i in pair]
             assert len(set(flat)) == n
@@ -68,9 +68,7 @@ def test_jacobi_eigh_unbatched_small():
         (A @ V).numpy(), (V * D.unsqueeze(-2)).numpy(), rtol=1e-9, atol=1e-10
     )
     # Orthogonality
-    np.testing.assert_allclose(
-        (V @ V.T).numpy(), np.eye(8), rtol=1e-10, atol=1e-12
-    )
+    np.testing.assert_allclose((V @ V.T).numpy(), np.eye(8), rtol=1e-10, atol=1e-12)
 
 
 def test_jacobi_eigh_batched_cpu_f64():

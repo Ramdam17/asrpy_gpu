@@ -49,9 +49,7 @@ def _tournament_pairs(n: int) -> list[list[tuple[int, int]]]:
         # For odd n, append a phantom index n; rounds where a pair
         # contains n are skipped (one pair per round becomes a "bye").
         rounds = _tournament_pairs(n + 1)
-        return [
-            [(p, q) for p, q in rnd if p != n and q != n] for rnd in rounds
-        ]
+        return [[(p, q) for p, q in rnd if p != n and q != n] for rnd in rounds]
 
     indices = list(range(n))
     fixed = indices[0]
