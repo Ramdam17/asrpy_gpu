@@ -522,20 +522,32 @@ def process(
         thresh = (TV**2).sum(dim=1)  # (W, C)
         idx_C = torch.arange(n_channels, device=device).unsqueeze(0)
         keep = (D_all < thresh) | (idx_C + 1 < (n_channels - maxdims))
-        # trivial[w] is True when ALL components are kept.
+        # trivial[w] is True when ALL components are kept (R = I).
         trivial_all = keep.all(dim=1)  # (W,)
 
-        # Compute reconstruction matrices R per window (only where !trivial).
-        # R = M @ pinv(keep[:, None] * (V.T @ M)) @ V.T
-        VtM = V_all.transpose(-2, -1) @ M_t  # (W, C, C)
-        masked = keep.unsqueeze(-1) * VtM  # (W, C, C) zero-out rows
-        # Use eigh-based pinv to keep MPS native; falls through to
-        # torch.linalg.pinv on devices where eigh is native already.
-        if device == "mps":
-            pinv_masked = pinv_via_eigh(masked)
-        else:
-            pinv_masked = torch.linalg.pinv(masked)
-        R_all = M_t @ pinv_masked @ V_all.transpose(-2, -1)
+        # Skip-trivial optimisation: we only need to compute R for windows
+        # where keep is NOT all True. For typical resting-EEG signals
+        # most windows are trivial, so this avoids the bulk of the
+        # eigh + pinv work on those windows.
+        non_trivial = ~trivial_all
+        n_windows = D_all.shape[0]
+
+        # Default R = I for every window.
+        R_all = eye_C.unsqueeze(0).expand(n_windows, n_channels, n_channels).contiguous()
+
+        if non_trivial.any():
+            nt_idx = non_trivial.nonzero(as_tuple=False).squeeze(-1)
+            keep_nt = keep[nt_idx]                       # (W_nt, C)
+            V_nt = V_all[nt_idx]                         # (W_nt, C, C)
+            VtM_nt = V_nt.transpose(-2, -1) @ M_t        # (W_nt, C, C)
+            masked_nt = keep_nt.unsqueeze(-1) * VtM_nt   # (W_nt, C, C)
+
+            if device == "mps":
+                pinv_nt = pinv_via_eigh(masked_nt)
+            else:
+                pinv_nt = torch.linalg.pinv(masked_nt)
+            R_nt = M_t @ pinv_nt @ V_nt.transpose(-2, -1)
+            R_all = R_all.index_copy(0, nt_idx, R_nt)
 
         # Sequential blending loop (intrinsically sequential — depends on
         # last_R). Operations stay on device; only Python orchestrates.
