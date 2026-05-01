@@ -125,7 +125,8 @@ kernel void block_jacobi_eigh_kernel(
     constant int*  sub_schedule      [[buffer(8)]],   // tournament inside the 2b sub-matrix
     constant float& tol_abs_inner    [[buffer(9)]],
     constant uint& max_inner_sweeps  [[buffer(10)]],
-    threadgroup float* shared_mem    [[threadgroup(0)]],   // sub_A + sub_Q + sub_cs + off_sum
+    constant float& tol_abs_outer    [[buffer(11)]],  // off-block-diag Frobenius cap
+    threadgroup float* shared_mem    [[threadgroup(0)]],   // sub_A + sub_Q + sub_cs + off_sum + off_block_sum
     uint tg_id                       [[threadgroup_position_in_grid]],
     uint tid                         [[thread_position_in_threadgroup]],
     uint tg_size                     [[threads_per_threadgroup]])
@@ -142,6 +143,7 @@ kernel void block_jacobi_eigh_kernel(
     threadgroup float* sub_Q = sub_A + SUB_NN;
     threadgroup float* sub_cs = sub_Q + SUB_NN;
     threadgroup float* off_sum = sub_cs + SUB_NPAIRS * 2;
+    threadgroup float* off_block_sum = off_sum + 1;
 
     // Initialise V = I.
     for (uint w = tid; w < n * n; w += tg_size) {
@@ -293,5 +295,34 @@ kernel void block_jacobi_eigh_kernel(
                 }
             }
         }
+
+        // === End-of-outer-sweep convergence check ===
+        // Sum squared off-block-diagonal entries of A. When that's below
+        // tol_abs_outer², the matrix is close enough to block-diagonal that
+        // further block sweeps stop helping — break out for this matrix.
+        //
+        // Reduction strategy: each thread writes its partial sum into
+        // sub_A[tid] (which is otherwise free at this point — apply-Q done),
+        // then thread 0 does the (small) serial sum. One round-trip via
+        // threadgroup memory beats 1024 serial barriers.
+        float local_obs = 0.0f;
+        for (uint w = tid; w < n * n; w += tg_size) {
+            uint i = w / n, j = w % n;
+            uint bi = i / BLOCK_SIZE;
+            uint bj = j / BLOCK_SIZE;
+            if (bi != bj) {
+                float a = A[w];
+                local_obs += a * a;
+            }
+        }
+        sub_A[tid] = local_obs;  // reuse sub_A as reduction scratch
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0) {
+            float total = 0.0f;
+            for (uint t = 0; t < tg_size; t++) total += sub_A[t];
+            *off_block_sum = total;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (*off_block_sum < tol_abs_outer * tol_abs_outer) break;
     }
 }

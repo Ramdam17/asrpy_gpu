@@ -549,9 +549,13 @@ def process(
 
         # Sequential blending loop (intrinsically sequential — depends on
         # last_R). Operations stay on device; only Python orchestrates.
+        # We pre-fetch the trivial_all flag array to CPU once (one sync) and
+        # iterate over the numpy view, instead of `.item()`-syncing each
+        # iteration. For B≈300 windows that turns 300 mps→cpu syncs into 1.
+        trivial_arr = trivial_all.cpu().numpy() if trivial_all.is_mps or trivial_all.is_cuda else trivial_all.numpy()
         last_n = 0
         for j in range(len(update_at) - 1):
-            trivial = bool(trivial_all[j].item())
+            trivial = bool(trivial_arr[j])
             R_j = eye_C if trivial else R_all[j]
 
             n = int(update_at[j]) + 1

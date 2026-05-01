@@ -214,11 +214,20 @@ def jacobi_eigh_block(
         struct.pack("I", max_inner_sweeps), 4, options
     )
 
-    # Threadgroup memory: sub_A + sub_Q + sub_cs + off_sum
+    # Outer convergence threshold: relative to ||A||_F. When the off-block-
+    # diagonal Frobenius² of A drops below this², we stop iterating outer
+    # block sweeps. Empirically a generous tolerance is fine because the
+    # block sweep cycle reduces this norm geometrically.
+    tol_abs_outer = 10.0 * rel_tol * a_fro
+    buf_tol_outer = device.newBufferWithBytes_length_options_(
+        struct.pack("f", tol_abs_outer), 4, options
+    )
+
+    # Threadgroup memory: sub_A + sub_Q + sub_cs + off_sum + off_block_sum
     SUB_DIM = 2 * BLOCK_SIZE
     SUB_NN = SUB_DIM * SUB_DIM
     SUB_NPAIRS = SUB_DIM // 2
-    threadgroup_bytes = (SUB_NN + SUB_NN + SUB_NPAIRS * 2 + 1) * 4
+    threadgroup_bytes = (SUB_NN + SUB_NN + SUB_NPAIRS * 2 + 1 + 1) * 4
 
     cmd = queue.commandBuffer()
     enc = cmd.computeCommandEncoder()
@@ -234,6 +243,7 @@ def jacobi_eigh_block(
     enc.setBuffer_offset_atIndex_(buf_sub_sched, 0, 8)
     enc.setBuffer_offset_atIndex_(buf_tol, 0, 9)
     enc.setBuffer_offset_atIndex_(buf_max_is, 0, 10)
+    enc.setBuffer_offset_atIndex_(buf_tol_outer, 0, 11)
     enc.setThreadgroupMemoryLength_atIndex_(threadgroup_bytes, 0)
 
     max_threads = pipeline.maxTotalThreadsPerThreadgroup()
