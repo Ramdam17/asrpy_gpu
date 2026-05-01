@@ -171,6 +171,59 @@ def _eigh_native_or_cpu(
     raise RuntimeError(f"Unknown eigh strategy {strategy!r}")
 
 
+def pinv_via_eigh(
+    A: torch.Tensor, *, rcond: float | None = None
+) -> torch.Tensor:
+    """Moore-Penrose pseudoinverse of square ``A`` via eigh of ``A.T @ A``.
+
+    For a square matrix ``A`` (potentially rank-deficient),
+
+        pinv(A) = V diag(1/D⁺) Vᵀ Aᵀ
+
+    where ``V, D = eigh(Aᵀ A)`` and ``1/D⁺`` zeroes out eigenvalues that
+    fall below ``rcond * max(D)``. ``Aᵀ A`` is symmetric positive
+    semi-definite, so it is the perfect input for our Jacobi-Metal eigh
+    kernel — using this formula keeps the whole computation on MPS,
+    bypassing the silent CPU-SVD fallback that ``torch.linalg.pinv``
+    triggers on Apple's MPS backend.
+
+    Parameters
+    ----------
+    A : Tensor, shape (..., n, n)
+        Batched square matrix. Must be float32 or float64.
+    rcond : float, optional
+        Relative cutoff for the small eigenvalues; defaults to
+        ``max(n) * eps`` for the dtype.
+
+    Returns
+    -------
+    P : Tensor, shape (..., n, n)
+        Pseudoinverse, same dtype and device as ``A``.
+
+    Notes
+    -----
+    For numerical accuracy this routine is comparable to ``torch.linalg.
+    pinv`` for well-conditioned matrices and slightly worse for very
+    rank-deficient / ill-conditioned ones (the squaring ``Aᵀ A`` doubles
+    the condition number). For our use case in :func:`process` ``A`` is
+    a row-masked rotation of an SPD matrix, so its non-zero singular
+    values stay well-separated from zero.
+    """
+    if rcond is None:
+        rcond = A.shape[-1] * torch.finfo(A.dtype).eps
+
+    # B = Aᵀ A — symmetric positive semi-definite.
+    B = A.transpose(-2, -1) @ A
+    D, V = _eigh_native_or_cpu(B)  # batched-aware
+
+    # tol per-batch = rcond * max(D, dim=-1)
+    tol = rcond * D.amax(dim=-1, keepdim=True)
+    D_inv = torch.where(D > tol, 1.0 / D.clamp(min=torch.finfo(A.dtype).tiny), torch.zeros_like(D))
+
+    # pinv = V diag(D_inv) Vᵀ Aᵀ
+    return V @ (D_inv.unsqueeze(-1) * V.transpose(-2, -1)) @ A.transpose(-2, -1)
+
+
 # ---------------------------------------------------------------------------
 # GPU-side primitives
 # ---------------------------------------------------------------------------
@@ -476,7 +529,13 @@ def process(
         # R = M @ pinv(keep[:, None] * (V.T @ M)) @ V.T
         VtM = V_all.transpose(-2, -1) @ M_t  # (W, C, C)
         masked = keep.unsqueeze(-1) * VtM  # (W, C, C) zero-out rows
-        R_all = M_t @ torch.linalg.pinv(masked) @ V_all.transpose(-2, -1)
+        # Use eigh-based pinv to keep MPS native; falls through to
+        # torch.linalg.pinv on devices where eigh is native already.
+        if device == "mps":
+            pinv_masked = pinv_via_eigh(masked)
+        else:
+            pinv_masked = torch.linalg.pinv(masked)
+        R_all = M_t @ pinv_masked @ V_all.transpose(-2, -1)
 
         # Sequential blending loop (intrinsically sequential — depends on
         # last_R). Operations stay on device; only Python orchestrates.
