@@ -33,6 +33,9 @@ metal = [
     "pyobjc-core>=12.1",
     "pyobjc-framework-metal>=12.1",
 ]
+gpu-audio = [
+    "torchaudio>=2.11.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/ramdam17/asrpy_gpu"

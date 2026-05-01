@@ -69,14 +69,19 @@ def test_block_jacobi_n256():
     _check_eigh(A, D, V)
 
 
-def test_block_jacobi_rejects_non_multiple_of_block_size():
-    A = _make_spd(2, 96, seed=3)  # 96 / 32 = 3, multiple, OK
-    D, V = jacobi_eigh_block(A)
-    _check_eigh(A, D, V)
-
-    A_bad = _make_spd(2, 100, seed=4)  # 100 / 32 not integer
-    with pytest.raises(ValueError, match="multiple of BLOCK_SIZE"):
+def test_block_jacobi_rejects_misaligned_n():
+    # n must be a multiple of SUB_DIM = 2 * BLOCK_SIZE = 64.
+    # Multiples: 64, 128, 192, 256, …
+    A_bad = _make_spd(2, 96, seed=3)  # 96 not multiple of 64
+    with pytest.raises(ValueError, match="multiple of SUB_DIM"):
         jacobi_eigh_block(A_bad)
+    A_bad = _make_spd(2, 100, seed=4)
+    with pytest.raises(ValueError, match="multiple of SUB_DIM"):
+        jacobi_eigh_block(A_bad)
+    # Multiples of 64 work.
+    A_ok = _make_spd(2, 192, seed=5)
+    D, V = jacobi_eigh_block(A_ok)
+    _check_eigh(A_ok, D, V)
 
 
 def test_block_jacobi_eigvals_ascending():

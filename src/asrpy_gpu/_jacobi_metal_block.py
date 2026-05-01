@@ -102,7 +102,7 @@ def jacobi_eigh_block(
     A: np.ndarray,
     *,
     max_block_sweeps: int = 8,
-    max_inner_sweeps: int = 12,
+    max_inner_sweeps: int | None = None,
     rel_tol: float = 1.0e-6,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Block-Jacobi symmetric eigendecomposition on the GPU.
@@ -136,8 +136,16 @@ def jacobi_eigh_block(
     B, n, m = A.shape
     if n != m:
         raise ValueError(f"Square required, got {A.shape}")
-    if n % BLOCK_SIZE != 0:
-        raise ValueError(f"n={n} must be a multiple of BLOCK_SIZE={BLOCK_SIZE}")
+    # The double-tile apply-Q step works in chunks of SUB_DIM = 2 * BLOCK_SIZE.
+    # We therefore require n to be a multiple of SUB_DIM (e.g. 64, 128, 256).
+    # Smaller / non-multiple matrices should use _jacobi_metal.jacobi_eigh.
+    SUB_DIM = 2 * BLOCK_SIZE
+    if n % SUB_DIM != 0:
+        raise ValueError(
+            f"n={n} must be a multiple of SUB_DIM={SUB_DIM} for the "
+            f"double-tiled apply-Q step. Use _jacobi_metal.jacobi_eigh "
+            f"for smaller / non-aligned matrices."
+        )
 
     num_blocks = n // BLOCK_SIZE
     if num_blocks < 2:
@@ -145,6 +153,18 @@ def jacobi_eigh_block(
             f"Block Jacobi needs num_blocks ≥ 2 (n ≥ {2 * BLOCK_SIZE}). "
             f"Use _jacobi_metal.jacobi_eigh for smaller matrices."
         )
+
+    # Auto-tune max_inner_sweeps based on num_blocks. With many block-pairs
+    # (large n), the OUTER iterations carry the convergence and 1 inner
+    # sweep is enough. With few block-pairs (small n), we need to converge
+    # the inner sub-eigh more thoroughly.
+    if max_inner_sweeps is None:
+        if num_blocks >= 8:
+            max_inner_sweeps = 1
+        elif num_blocks >= 4:
+            max_inner_sweeps = 4
+        else:
+            max_inner_sweeps = 12
 
     A32 = np.ascontiguousarray(A, dtype=np.float32).copy()
 

@@ -180,83 +180,117 @@ kernel void block_jacobi_eigh_kernel(
                 inner_jacobi_sweep(sub_A, sub_Q, sub_schedule, sub_cs, off_sum,
                                    tol_abs_inner, max_inner_sweeps, tid, tg_size);
 
-                // 3) Apply sub_Qᵀ from the LEFT to A's row blocks i and j.
-                //    Equivalently: the 2b active rows form a 2b × n submatrix
-                //    R = [A_i_rows; A_j_rows]. We compute R := sub_Qᵀ R.
-                //    Stream column by column: at each col `cc`, read 2b values
-                //    (one from each active row), apply sub_Qᵀ in registers,
-                //    write back.
+                // After inner Jacobi: sub_A holds the diagonalised sub-block;
+                // its only purpose now is the 2b×2b storage region itself.
+                // We re-use that region as a staging buffer (`chunk_buf`)
+                // for the apply-Q steps. ``sub_Q`` stays put and is read
+                // many times.
+                threadgroup float* chunk_buf = sub_A;
+
+                // ---------------- Step 3 : apply sub_Qᵀ from the LEFT ----
                 //
-                //    Each thread handles a chunk of columns.
-                for (uint cc = tid; cc < n; cc += tg_size) {
-                    // Read 2b values from column `cc`.
-                    float r_vals[SUB_DIM];
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gr = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        r_vals[k] = A[gr * n + cc];
+                // The 2b active rows form a 2b × n sub-matrix R. We
+                // compute R := sub_Qᵀ R column-tile by column-tile.
+                //
+                // For each tile of CHUNK_COLS columns:
+                //   1. Stage R[:, tile] in chunk_buf (2b × CHUNK_COLS).
+                //   2. All threads cooperate to compute the 2b × CHUNK_COLS
+                //      output, reading the staged input + sub_Q from
+                //      threadgroup memory and writing directly to A's
+                //      row blocks in device memory.
+                //
+                // CHUNK_COLS = SUB_DIM = 64: chunk_buf is 2b × 64 = 16 KB,
+                // fitting next to sub_Q in our 32 KB threadgroup memory.
+                //
+                // This is the "double-tile" arrangement: tiling on the
+                // block-pair axis (outer) AND on the column axis of the
+                // apply step (inner). It restores good thread
+                // utilisation (1024/1024 active vs 256/1024 in the naïve
+                // version) and amortises every device-memory read across
+                // 2b multiply-adds.
+                for (uint chunk = 0; chunk < n; chunk += SUB_DIM) {
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint rr = w / SUB_DIM;
+                        uint cc = w % SUB_DIM;
+                        uint gr = (rr < BLOCK_SIZE) ? (i_off + rr)
+                                                    : (j_off + rr - BLOCK_SIZE);
+                        chunk_buf[w] = A[gr * n + (chunk + cc)];
                     }
-                    // Apply sub_Qᵀ from the left: r_new[i] = sum_k sub_Q[k, i] * r_vals[k]
-                    //   (sub_Qᵀ[i, k] = sub_Q[k, i])
-                    float r_new[SUB_DIM];
-                    for (uint i = 0; i < SUB_DIM; i++) {
-                        float acc = 0.0f;
-                        for (uint k = 0; k < SUB_DIM; k++) {
-                            acc += sub_Q[k * SUB_DIM + i] * r_vals[k];
-                        }
-                        r_new[i] = acc;
-                    }
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gr = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        A[gr * n + cc] = r_new[k];
-                    }
-                }
-                threadgroup_barrier(mem_flags::mem_device);
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-                // 4) Apply sub_Q from the RIGHT to A's column blocks i and j.
-                //    The 2b active columns form an n × 2b submatrix
-                //    C[r, c]. Compute C := C sub_Q.
-                for (uint rr = tid; rr < n; rr += tg_size) {
-                    float c_vals[SUB_DIM];
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gc = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        c_vals[k] = A[rr * n + gc];
-                    }
-                    float c_new[SUB_DIM];
-                    for (uint c = 0; c < SUB_DIM; c++) {
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint i = w / SUB_DIM;
+                        uint cc = w % SUB_DIM;
                         float acc = 0.0f;
                         for (uint k = 0; k < SUB_DIM; k++) {
-                            acc += c_vals[k] * sub_Q[k * SUB_DIM + c];
+                            acc += sub_Q[k * SUB_DIM + i]
+                                 * chunk_buf[k * SUB_DIM + cc];
                         }
-                        c_new[c] = acc;
+                        uint gr_out = (i < BLOCK_SIZE) ? (i_off + i)
+                                                       : (j_off + i - BLOCK_SIZE);
+                        A[gr_out * n + (chunk + cc)] = acc;
                     }
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gc = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        A[rr * n + gc] = c_new[k];
-                    }
+                    threadgroup_barrier(mem_flags::mem_device);
                 }
-                threadgroup_barrier(mem_flags::mem_device);
 
-                // 5) Update accumulated V columns: V[:, block_i ∪ block_j] @= sub_Q.
-                for (uint rr = tid; rr < n; rr += tg_size) {
-                    float v_vals[SUB_DIM];
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gc = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        v_vals[k] = V[rr * n + gc];
+                // ---------------- Step 4 : apply sub_Q from the RIGHT --
+                //
+                // The 2b active columns form an n × 2b sub-matrix C. We
+                // compute C := C sub_Q tile by tile (rows are tiled).
+                for (uint chunk = 0; chunk < n; chunk += SUB_DIM) {
+                    // Stage SUB_DIM rows × 2b cols into chunk_buf.
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint rr = w / SUB_DIM;
+                        uint cc = w % SUB_DIM;
+                        uint gc = (cc < BLOCK_SIZE) ? (i_off + cc)
+                                                    : (j_off + cc - BLOCK_SIZE);
+                        chunk_buf[w] = A[(chunk + rr) * n + gc];
                     }
-                    float v_new[SUB_DIM];
-                    for (uint c = 0; c < SUB_DIM; c++) {
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint rr = w / SUB_DIM;
+                        uint c = w % SUB_DIM;
                         float acc = 0.0f;
                         for (uint k = 0; k < SUB_DIM; k++) {
-                            acc += v_vals[k] * sub_Q[k * SUB_DIM + c];
+                            acc += chunk_buf[rr * SUB_DIM + k]
+                                 * sub_Q[k * SUB_DIM + c];
                         }
-                        v_new[c] = acc;
+                        uint gc_out = (c < BLOCK_SIZE) ? (i_off + c)
+                                                       : (j_off + c - BLOCK_SIZE);
+                        A[(chunk + rr) * n + gc_out] = acc;
                     }
-                    for (uint k = 0; k < SUB_DIM; k++) {
-                        uint gc = (k < BLOCK_SIZE) ? (i_off + k) : (j_off + k - BLOCK_SIZE);
-                        V[rr * n + gc] = v_new[k];
-                    }
+                    threadgroup_barrier(mem_flags::mem_device);
                 }
-                threadgroup_barrier(mem_flags::mem_device);
+
+                // ---------------- Step 5 : V update -----------------------
+                //
+                // V[:, block_i ∪ block_j] @= sub_Q. Same structure as
+                // step 4 but on V.
+                for (uint chunk = 0; chunk < n; chunk += SUB_DIM) {
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint rr = w / SUB_DIM;
+                        uint cc = w % SUB_DIM;
+                        uint gc = (cc < BLOCK_SIZE) ? (i_off + cc)
+                                                    : (j_off + cc - BLOCK_SIZE);
+                        chunk_buf[w] = V[(chunk + rr) * n + gc];
+                    }
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                    for (uint w = tid; w < SUB_DIM * SUB_DIM; w += tg_size) {
+                        uint rr = w / SUB_DIM;
+                        uint c = w % SUB_DIM;
+                        float acc = 0.0f;
+                        for (uint k = 0; k < SUB_DIM; k++) {
+                            acc += chunk_buf[rr * SUB_DIM + k]
+                                 * sub_Q[k * SUB_DIM + c];
+                        }
+                        uint gc_out = (c < BLOCK_SIZE) ? (i_off + c)
+                                                       : (j_off + c - BLOCK_SIZE);
+                        V[(chunk + rr) * n + gc_out] = acc;
+                    }
+                    threadgroup_barrier(mem_flags::mem_device);
+                }
             }
         }
     }
