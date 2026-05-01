@@ -34,7 +34,29 @@ from scipy.linalg import toeplitz
 from scipy.spatial.distance import cdist, euclidean
 from scipy.special import gamma, gammaincinv
 
+from ._errors import InsufficientCalibrationDataError
+
 logger = logging.getLogger(__name__)
+
+
+def _check_calibration_size(
+    n_samples: int, sfreq: float, win_len: float, win_overlap: float
+) -> None:
+    """Raise :class:`InsufficientCalibrationDataError` if too few samples.
+
+    The threshold matches what ``calibrate`` / ``clean_windows`` actually
+    require: at least one usable window-step, i.e. ``n_samples > N`` where
+    ``N = round(win_len * sfreq)`` (so that
+    ``np.arange(0, n_samples - N, step)`` is non-empty).
+    """
+    N = int(np.round(win_len * sfreq))
+    if n_samples <= N:
+        raise InsufficientCalibrationDataError(
+            n_samples=n_samples,
+            sfreq=sfreq,
+            n_required=N + 1,
+            win_len=win_len,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +115,11 @@ def calibrate(
     """
     n_channels, n_samples = X.shape
     logger.debug("[ASR-numpy] Calibrating: shape=%s sfreq=%g", X.shape, sfreq)
+
+    # Hard floor: without at least one window-step we cannot estimate the
+    # per-channel amplitude distribution, and `_fit_eeg_distribution` would
+    # crash on an empty array a few lines below. Fail loud here instead.
+    _check_calibration_size(n_samples, sfreq, win_len, win_overlap)
 
     # Spectrum-shaping IIR filter (Yule-Walker).
     X, _zf = _yulewalk_filter(X, sfreq, ab=ab)
@@ -310,6 +337,8 @@ def clean_windows(
     if not 0 < max_bad_chans < 1:
         raise ValueError("max_bad_chans must be a fraction in (0, 1)")
 
+    _check_calibration_size(X.shape[1], sfreq, win_len, win_overlap)
+
     truncate_quant = (0.0220, 0.6000)
     step_sizes = (0.01, 0.01)
     shape_range = np.arange(1.7, 3.5, 0.15)
@@ -389,6 +418,17 @@ def _fit_eeg_distribution(
     """
     X = np.sort(X)
     n = len(X)
+    if n == 0:
+        # Defensive contract check: upstream asrpy crashes here with an
+        # opaque IndexError on `newX[0, :]`. The high-level callers
+        # (`calibrate`, `clean_windows`) now guard against this with
+        # `_check_calibration_size`, so reaching this branch indicates a
+        # caller is using `_fit_eeg_distribution` directly with an empty
+        # array — fail loud.
+        raise ValueError(
+            "_fit_eeg_distribution received an empty array; need at least "
+            "one window-RMS sample to fit the EEG amplitude distribution."
+        )
 
     quants = np.array(fit_quantiles)
     zbounds: list[np.ndarray] = []

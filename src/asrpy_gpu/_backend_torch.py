@@ -429,6 +429,9 @@ def calibrate(
     dtype = _torch_dtype_for(device)
     n_channels, n_samples = X.shape
 
+    # Hard floor — see :func:`_backend_numpy._check_calibration_size`.
+    _np_backend._check_calibration_size(n_samples, sfreq, win_len, win_overlap)
+
     # Yule-Walker IIR filter — stays on CPU (sequential).
     X_filt_np, _ = _np_backend._yulewalk_filter(X, sfreq, ab=ab)
 

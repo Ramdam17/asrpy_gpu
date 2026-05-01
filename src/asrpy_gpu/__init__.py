@@ -15,6 +15,7 @@ from ._device import (
     TORCH_AVAILABLE,
     resolve_device,
 )
+from ._errors import InsufficientCalibrationDataError
 from .asr import ASR
 
 __version__ = "0.1.0"
@@ -22,6 +23,7 @@ __version__ = "0.1.0"
 __all__ = [
     "ASR",
     "CUDA_AVAILABLE",
+    "InsufficientCalibrationDataError",
     "MPS_AVAILABLE",
     "TORCH_AVAILABLE",
     "__version__",

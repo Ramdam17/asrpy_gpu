@@ -9,14 +9,17 @@ addition is a ``backend`` argument that selects ``"numpy"``, ``"torch"``, or
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 from . import _backend_numpy as _np_backend
 from ._device import resolve_device
+from ._errors import InsufficientCalibrationDataError
 
 logger = logging.getLogger(__name__)
+
+OnInsufficientData = Literal["raise", "warn_skip"]
 
 
 class ASR:
@@ -54,6 +57,21 @@ class ASR:
     backend : {"auto", "numpy", "torch"}, optional
         Compute backend. ``"auto"`` resolves to ``"torch"`` if torch is
         installed, otherwise ``"numpy"``.
+    min_calibration_seconds : float, optional
+        Soft threshold for the duration of clean calibration data after
+        :func:`clean_windows`. If the surviving signal is shorter than
+        this, :meth:`fit` emits a warning (the calibration still runs as
+        long as the structural minimum of one window is met). The default
+        of 30 s matches the common literature recommendation for ASR
+        (Mullen et al. 2015; BCILAB tutorials). Set to ``0.0`` to disable
+        the warning.
+    on_insufficient_data : {"raise", "warn_skip"}, optional
+        Policy when the structural minimum is *not* met (i.e. fewer than
+        one window-step of clean data survives). ``"raise"`` (default)
+        propagates :class:`InsufficientCalibrationDataError`. ``"warn_skip"``
+        logs a warning and leaves the ASR un-fitted, so a batch pipeline
+        can keep going and skip the offending subject — a subsequent
+        :meth:`transform` call will then raise a clear ``RuntimeError``.
 
     Attributes
     ----------
@@ -88,11 +106,19 @@ class ASR:
         max_bad_chans: float = 0.1,
         method: str = "euclid",
         backend: str = "auto",
+        min_calibration_seconds: float = 30.0,
+        on_insufficient_data: OnInsufficientData = "raise",
     ) -> None:
         if method != "euclid":
             raise NotImplementedError(
                 f"method={method!r} is not implemented in V1. Riemannian ASR "
                 "is on the roadmap as V2 — see docs/roadmap.md."
+            )
+
+        if on_insufficient_data not in ("raise", "warn_skip"):
+            raise ValueError(
+                "on_insufficient_data must be 'raise' or 'warn_skip', "
+                f"got {on_insufficient_data!r}"
             )
 
         self.sfreq = sfreq
@@ -104,6 +130,8 @@ class ASR:
         self.min_clean_fraction = min_clean_fraction
         self.max_bad_chans = max_bad_chans
         self.method = method
+        self.min_calibration_seconds = float(min_calibration_seconds)
+        self.on_insufficient_data: OnInsufficientData = on_insufficient_data
 
         # Resolve backend / device.
         self.backend, self.device = resolve_device(backend)
@@ -175,29 +203,70 @@ class ASR:
         """
         X = raw.get_data(picks=picks, start=start, stop=stop)
 
-        clean, sample_mask = self._impl.clean_windows(
-            X,
-            sfreq=self.sfreq,
-            win_len=self.win_len,
-            win_overlap=self.win_overlap,
-            max_bad_chans=self.max_bad_chans,
-            min_clean_fraction=self.min_clean_fraction,
-            max_dropout_fraction=self.max_dropout_fraction,
-            **self._backend_kwargs(),
-        )
+        # Both clean_windows and calibrate can raise InsufficientCalibration-
+        # DataError — clean_windows when the *input* is shorter than one
+        # window, calibrate when too many windows are rejected. We wrap both
+        # so the user's chosen policy applies uniformly.
+        clean: np.ndarray | None = None
+        sample_mask: np.ndarray | None = None
+        try:
+            clean, sample_mask = self._impl.clean_windows(
+                X,
+                sfreq=self.sfreq,
+                win_len=self.win_len,
+                win_overlap=self.win_overlap,
+                max_bad_chans=self.max_bad_chans,
+                min_clean_fraction=self.min_clean_fraction,
+                max_dropout_fraction=self.max_dropout_fraction,
+                **self._backend_kwargs(),
+            )
 
-        self.M, self.T = self._impl.calibrate(
-            clean,
-            sfreq=self.sfreq,
-            cutoff=self.cutoff,
-            blocksize=self.blocksize,
-            win_len=self.win_len,
-            win_overlap=self.win_overlap,
-            max_dropout_fraction=self.max_dropout_fraction,
-            min_clean_fraction=self.min_clean_fraction,
-            ab=(self.A, self.B),
-            **self._backend_kwargs(),
-        )
+            # Soft warning: compare what survived clean_windows against the
+            # literature recommendation. Independent of the structural floor
+            # checked inside `calibrate`.
+            clean_seconds = clean.shape[1] / self.sfreq
+            if (
+                self.min_calibration_seconds > 0
+                and clean_seconds < self.min_calibration_seconds
+            ):
+                logger.warning(
+                    "[ASR] Only %.2f s of clean calibration data survived "
+                    "window rejection (< min_calibration_seconds=%.1f s). "
+                    "Calibration will proceed but the M/T estimates may be "
+                    "unreliable. Consider relaxing rejection thresholds or "
+                    "providing a longer calibration recording.",
+                    clean_seconds,
+                    self.min_calibration_seconds,
+                )
+
+            self.M, self.T = self._impl.calibrate(
+                clean,
+                sfreq=self.sfreq,
+                cutoff=self.cutoff,
+                blocksize=self.blocksize,
+                win_len=self.win_len,
+                win_overlap=self.win_overlap,
+                max_dropout_fraction=self.max_dropout_fraction,
+                min_clean_fraction=self.min_clean_fraction,
+                ab=(self.A, self.B),
+                **self._backend_kwargs(),
+            )
+        except InsufficientCalibrationDataError as exc:
+            if self.on_insufficient_data == "raise":
+                raise
+            # warn_skip: leave M/T as None, _fitted stays False, transform
+            # will raise a clear RuntimeError telling the user fit was skipped.
+            logger.warning(
+                "[ASR] Skipping calibration: %s (on_insufficient_data='warn_skip').",
+                exc,
+            )
+            self.M = None
+            self.T = None
+            self._fitted = False
+            if return_clean_window:
+                return clean, sample_mask
+            return None
+
         self._fitted = True
         logger.info(
             "[ASR] Fitted (backend=%s device=%s). M.shape=%s, T.shape=%s",
@@ -226,7 +295,11 @@ class ASR:
         ASR-cleaned counterparts. Same semantics as ``asrpy.ASR.transform``.
         """
         if not self._fitted:
-            raise RuntimeError("ASR.fit must be called before ASR.transform.")
+            raise RuntimeError(
+                "ASR.fit must succeed before ASR.transform. Either fit() "
+                "was not called, or it skipped calibration due to "
+                "insufficient clean data (on_insufficient_data='warn_skip')."
+            )
 
         X = raw.get_data(picks=picks)
 
