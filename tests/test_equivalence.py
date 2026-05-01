@@ -119,6 +119,46 @@ def test_torch_mps_process_matches_asrpy(synthetic_data, tolerances):
     assert corr >= tolerances["signal_correlation_min"]
 
 
+@needs_mps
+@pytest.mark.mps
+@pytest.mark.slow
+def test_torch_mps_block_jacobi_path_matches_asrpy(tolerances):
+    """High-channel-count regime that exercises the V3 block-Jacobi path.
+
+    The synthetic_data fixture uses n=16; this test goes to n=256 which
+    triggers the hybrid dispatch's block-Jacobi branch
+    (asrpy_gpu/_jacobi_metal_block.py). Otherwise that path has no
+    equivalence-vs-asrpy guard.
+
+    Signal: realistic 10 µV pink-noise + 30 ~100 µV spike artifacts (the
+    same scale used by the synthetic_data fixture).
+    """
+    from asrpy_gpu import _backend_torch as bt
+
+    rng = np.random.default_rng(42)
+    sfreq, n_chan = 256.0, 256
+    n_samples = int(30 * sfreq)
+    sig = rng.standard_normal((n_chan, n_samples)) * 1e-5
+    for _ in range(30):
+        t = rng.integers(int(0.5 * sfreq), n_samples - int(0.5 * sfreq))
+        c = rng.integers(0, n_chan)
+        sig[c, t] += rng.choice([-1.0, 1.0]) * 1e-4
+    sig = sig.astype(np.float64)
+
+    M_ref, T_ref = ref_calibrate(sig, sfreq=sfreq)
+    clean_ref = ref_process(sig, sfreq=sfreq, M=M_ref, T=T_ref)
+    clean_mps = bt.process(sig, sfreq=sfreq, M=M_ref, T=T_ref, device="mps")
+
+    np.testing.assert_allclose(
+        clean_mps,
+        clean_ref,
+        rtol=tolerances["torch_mps_vs_asrpy"]["rtol"],
+        atol=tolerances["torch_mps_vs_asrpy"]["atol"],
+    )
+    corr = np.corrcoef(clean_mps.ravel(), clean_ref.ravel())[0, 1]
+    assert corr >= tolerances["signal_correlation_min"]
+
+
 # ---------------------------------------------------------------------------
 # EEGLAB reference — L2 with real-world data
 # ---------------------------------------------------------------------------
