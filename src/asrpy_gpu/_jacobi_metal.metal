@@ -35,7 +35,8 @@ kernel void jacobi_eigh_kernel(
     constant int*  schedule          [[buffer(4)]],   // (n_rounds, n_pairs, 2) flat
     constant uint& n_rounds          [[buffer(5)]],
     constant uint& n_pairs           [[buffer(6)]],
-    threadgroup float* shared_cs     [[threadgroup(0)]],  // (n_pairs * 2)
+    constant float& tol_abs          [[buffer(7)]],   // off-diag Frobenius threshold
+    threadgroup float* shared_mem    [[threadgroup(0)]],  // (n_pairs*2 + 1) floats
     uint  tg_id                      [[threadgroup_position_in_grid]],
     uint  tid                        [[thread_position_in_threadgroup]],
     uint  tg_size                    [[threads_per_threadgroup]])
@@ -43,6 +44,12 @@ kernel void jacobi_eigh_kernel(
     // Pointers to this matrix' (n*n) memory.
     device float* A = batched_A + tg_id * n * n;
     device float* V = batched_V + tg_id * n * n;
+
+    // Threadgroup memory layout: first n_pairs*2 floats hold (c, s) per
+    // pair (used inside the round); next slot is the partial-sum
+    // accumulator for the convergence check.
+    threadgroup float* shared_cs = shared_mem;
+    threadgroup float* off_sum_slot = shared_mem + n_pairs * 2;
 
     // Initialize V = I (each thread strides over elements).
     for (uint k = tid; k < n * n; k += tg_size) {
@@ -125,6 +132,38 @@ kernel void jacobi_eigh_kernel(
                 V[k * n + q] = s * v_kp + c * v_kq;
             }
             threadgroup_barrier(mem_flags::mem_device);
+        }
+
+        // End-of-sweep convergence check: sum of squares of the strictly
+        // upper-triangular off-diagonal entries. If below tol_abs² we
+        // break out early. Each thread accumulates its strided portion;
+        // thread 0 reduces and stores in off_sum_slot.
+        if (tid == 0) {
+            *off_sum_slot = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float local_sum = 0.0f;
+        for (uint w = tid; w < n * n; w += tg_size) {
+            uint i = w / n;
+            uint j = w % n;
+            if (i < j) {
+                float a = A[w];
+                local_sum += a * a;
+            }
+        }
+        // Naive reduction via atomic add on a single shared float.
+        // Metal does not allow atomics on shared float directly; use a
+        // round-robin write pattern: each thread adds its partial in turn.
+        for (uint t = 0; t < tg_size; t++) {
+            if (tid == t) {
+                *off_sum_slot += local_sum;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        if (*off_sum_slot < tol_abs * tol_abs) {
+            break;  // early exit for this matrix
         }
     }
 

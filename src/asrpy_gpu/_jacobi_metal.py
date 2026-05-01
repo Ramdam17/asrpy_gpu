@@ -115,7 +115,7 @@ def _get_schedule(n: int) -> tuple[np.ndarray, int, int]:
 
 
 def jacobi_eigh(
-    A: np.ndarray, *, max_sweeps: int = 15
+    A: np.ndarray, *, max_sweeps: int = 15, rel_tol: float = 1.0e-6
 ) -> tuple[np.ndarray, np.ndarray]:
     """Batched symmetric eigendecomposition on the GPU via Metal.
 
@@ -185,8 +185,20 @@ def jacobi_eigh(
         struct.pack("I", n_pairs), 4, options
     )
 
-    # Threadgroup memory for the (c, s) of the n_pairs rotations of a round.
-    threadgroup_bytes = n_pairs * 2 * 4  # 2 floats per pair, 4 bytes each
+    # Convergence threshold: tol = rel_tol × mean(||A||_F) of the batch.
+    # The kernel checks the sum of squares of strictly upper-triangular
+    # entries against tol². Using a single threshold for the whole batch
+    # is acceptable because matrices in the same batch are scale-similar
+    # in our use case.
+    a_fro = float(np.linalg.norm(A_buf_in.reshape(B, -1), axis=-1).mean())
+    tol_abs = rel_tol * a_fro
+    buf_tol = device.newBufferWithBytes_length_options_(
+        struct.pack("f", tol_abs), 4, options
+    )
+
+    # Threadgroup memory: n_pairs * 2 floats for (c, s) per pair PLUS one
+    # slot for the convergence-check accumulator.
+    threadgroup_bytes = (n_pairs * 2 + 1) * 4
     threadgroup_bytes = max(threadgroup_bytes, 16)  # Metal alignment
 
     cmd = queue.commandBuffer()
@@ -199,6 +211,7 @@ def jacobi_eigh(
     enc.setBuffer_offset_atIndex_(buf_sched, 0, 4)
     enc.setBuffer_offset_atIndex_(buf_n_rounds, 0, 5)
     enc.setBuffer_offset_atIndex_(buf_n_pairs, 0, 6)
+    enc.setBuffer_offset_atIndex_(buf_tol, 0, 7)
     enc.setThreadgroupMemoryLength_atIndex_(threadgroup_bytes, 0)
 
     # Use as many threads per threadgroup as we can (typically 1024 on
