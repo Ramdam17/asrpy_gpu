@@ -81,32 +81,94 @@ def _sync(device: str) -> None:
         torch.cuda.synchronize()
 
 
+_EIGH_STRATEGY: str = "auto"
+
+
+def set_eigh_strategy(strategy: str) -> None:
+    """Override the eigh strategy used by the torch backend.
+
+    Valid strategies:
+
+    * ``"auto"`` — pick the best available for the current device. MPS →
+      ``"jacobi_metal"`` if pyobjc-Metal is installed, else
+      ``"cpu_fallback"``. CUDA / CPU → ``"native"``.
+    * ``"native"`` — call ``torch.linalg.eigh`` directly (fails on MPS).
+    * ``"cpu_fallback"`` — move to CPU, compute in float64, move back.
+    * ``"jacobi_torch"`` — pure-torch parallel Jacobi (portable; correct
+      but not competitive on MPS due to Python kernel-launch overhead).
+    * ``"jacobi_metal"`` — Metal compute kernel batched Jacobi (MPS only).
+    """
+    valid = {"auto", "native", "cpu_fallback", "jacobi_torch", "jacobi_metal"}
+    if strategy not in valid:
+        raise ValueError(f"strategy must be one of {valid}, got {strategy!r}")
+    global _EIGH_STRATEGY
+    _EIGH_STRATEGY = strategy
+
+
+def get_eigh_strategy() -> str:
+    return _EIGH_STRATEGY
+
+
+def _resolve_eigh_strategy(device_type: str) -> str:
+    if _EIGH_STRATEGY != "auto":
+        return _EIGH_STRATEGY
+    if device_type == "mps":
+        from ._jacobi_metal import METAL_AVAILABLE
+
+        return "jacobi_metal" if METAL_AVAILABLE else "cpu_fallback"
+    return "native"
+
+
+def _eigh_cpu_fallback(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if A.device.type == "mps":
+        A_cpu64 = A.detach().to("cpu").to(torch.float64)
+    else:
+        A_cpu64 = A.detach().to(torch.float64)
+    D_cpu, V_cpu = torch.linalg.eigh(A_cpu64)
+    D = D_cpu.to(A.dtype).to(A.device)
+    V = V_cpu.to(A.dtype).to(A.device)
+    return D, V
+
+
+def _eigh_jacobi_torch_strategy(
+    A: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    from ._jacobi_torch import jacobi_eigh
+
+    return jacobi_eigh(A)
+
+
+def _eigh_jacobi_metal_strategy(
+    A: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    from ._jacobi_metal import jacobi_eigh as metal_eigh
+
+    # Metal kernel is float32 only; we accept the precision loss
+    # (documented). Caller's tensor stays in its current dtype.
+    A_np = A.detach().to("cpu").to(torch.float32).numpy()
+    D_np, V_np = metal_eigh(A_np)
+    D = torch.from_numpy(D_np).to(A.device).to(A.dtype)
+    V = torch.from_numpy(V_np).to(A.device).to(A.dtype)
+    return D, V
+
+
 def _eigh_native_or_cpu(
     A: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Hermitian eigendecomposition that works on every device.
+    """Hermitian eigendecomposition with the configured strategy.
 
-    ``torch.linalg.eigh`` is not yet implemented on MPS (torch 2.11). For
-    MPS tensors we move to CPU, compute in float64 (better than the float32
-    we use on-device), and move the result back to the original device and
-    dtype. For CUDA / CPU we call the native op.
-
-    Returns
-    -------
-    eigenvalues : Tensor
-        Sorted ascending, same device & dtype as ``A``.
-    eigenvectors : Tensor
-        Same device & dtype as ``A``; columns are eigenvectors.
+    See :func:`set_eigh_strategy`.
     """
-    if A.device.type == "mps":
-        # MPS forbids casting in a single .to(); do the move first, then
-        # promote dtype on CPU.
-        A_cpu64 = A.detach().to("cpu").to(torch.float64)
-        D_cpu, V_cpu = torch.linalg.eigh(A_cpu64)
-        D = D_cpu.to(A.dtype).to(A.device)
-        V = V_cpu.to(A.dtype).to(A.device)
-        return D, V
-    return torch.linalg.eigh(A)
+    strategy = _resolve_eigh_strategy(A.device.type)
+    if strategy == "native":
+        return torch.linalg.eigh(A)
+    if strategy == "cpu_fallback":
+        return _eigh_cpu_fallback(A)
+    if strategy == "jacobi_torch":
+        return _eigh_jacobi_torch_strategy(A)
+    if strategy == "jacobi_metal":
+        return _eigh_jacobi_metal_strategy(A)
+    raise RuntimeError(f"Unknown eigh strategy {strategy!r}")
 
 
 # ---------------------------------------------------------------------------

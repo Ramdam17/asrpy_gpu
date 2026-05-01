@@ -29,6 +29,10 @@ dependencies = [
 torch = [
     "torch>=2.2",
 ]
+metal = [
+    "pyobjc-core>=12.1",
+    "pyobjc-framework-metal>=12.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/ramdam17/asrpy_gpu"
