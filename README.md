@@ -16,6 +16,43 @@ adds a single `backend` argument (`"auto" | "numpy" | "torch"`).
 
 ---
 
+## Install
+
+End-user install (recommended for using the library):
+
+```bash
+# core (numpy backend only — works everywhere, no GPU)
+uv add git+https://github.com/Ramdam17/asrpy_gpu
+
+# core + torch (CPU / MPS / CUDA)
+uv add 'asrpy_gpu[torch] @ git+https://github.com/Ramdam17/asrpy_gpu'
+
+# core + torch + the Apple Metal kernel for full MPS-native eigh / pinv
+uv add 'asrpy_gpu[torch,metal] @ git+https://github.com/Ramdam17/asrpy_gpu'
+```
+
+Or with `pip`:
+
+```bash
+pip install 'asrpy_gpu[torch,metal] @ git+https://github.com/Ramdam17/asrpy_gpu'
+```
+
+Minimum: Python 3.12, numpy ≥ 1.26, scipy ≥ 1.11, mne ≥ 1.6. The `torch`
+extra pulls torch ≥ 2.2, `metal` adds `pyobjc-framework-Metal` (Apple
+Silicon only).
+
+Developer install (for contributing — clones the repo, fetches `asrpy`
+from upstream as a numerical reference, installs ruff and pytest):
+
+```bash
+git clone https://github.com/Ramdam17/asrpy_gpu.git
+cd asrpy_gpu
+uv sync --all-groups --extra torch --extra metal
+uv run pytest
+```
+
+---
+
 ## Where this comes from
 
 `asrpy_gpu` is a fork of [`asrpy`](https://github.com/DiGyt/asrpy) by Dirk
@@ -29,19 +66,16 @@ EEGLAB's `clean_rawdata` ASR. The algorithm is described in:
 - Kothe, C. A. E., & Jung, T.-P. (2016). *U.S. Patent Application No.
   14/895,440.* https://patents.google.com/patent/US20160113587A1/en
 
-The Riemannian variant (planned for V2 of this fork) is from:
-
-- Blum, S., Jacobsen, N. S. J., Bleichner, M. G., & Debener, S. (2019).
-  *A Riemannian Modification of Artifact Subspace Reconstruction for EEG
-  Artifact Handling.* Frontiers in Human Neuroscience, 13.
-  https://doi.org/10.3389/fnhum.2019.00141
+The Riemannian variant (planned for V6 of this fork) is from Blum et al.
+(2019), *A Riemannian Modification of ASR*,
+[Frontiers in Human Neuroscience](https://doi.org/10.3389/fnhum.2019.00141).
 
 ---
 
 ## Why GPU
 
 `asrpy` is single-threaded numpy + scipy. On large EEG configurations (128
-channels, ≥30 min recordings, hyperscanning sessions), two pain-points
+channels, ≥ 30 min recordings, hyperscanning sessions), two pain-points
 appear:
 
 1. **Memory pressure / OOM.** The per-window covariance stack `Xcov` of
@@ -52,11 +86,32 @@ appear:
    window inside a Python loop. For a 30 min × 128 ch session at 256 Hz
    with `stepsize=32`, that's ~14 000 sequential eigh calls.
 
-`asrpy_gpu` keeps the algorithm bit-near `asrpy` (see
+`asrpy_gpu` keeps the algorithm equivalent to `asrpy` (see
 [`docs/equivalence.md`](docs/equivalence.md)) but routes the
-linear-algebra-heavy paths to a torch backend. Apple MPS is the primary
-target (the lab uses M4 Max and M-series workstations); CUDA is on the
-roadmap as V4.
+linear-algebra-heavy paths to a torch backend with custom Metal kernels
+on Apple Silicon. The lab targets M-series Macs (MAGSTIM EGI 128 ch
+sessions); CUDA is on the roadmap.
+
+---
+
+## Speedup vs the original `asrpy`
+
+Real numbers from `benchmarks/bench_process.py` on an Apple M4 Max,
+seeded random data, `process()` only:
+
+| channels | duration | numpy (s) | asrpy_gpu (MPS) | speedup |
+|---------:|---------:|----------:|----------------:|--------:|
+| 64  | 60 s  |  1.46 |  0.13 | **11×** |
+| 64  | 120 s |  3.0  |  0.24 | **12×** |
+| 128 | 60 s  | 23.0  |  0.63 | **36×** |
+| 128 | 120 s | 38.1  |  1.0  | **38×** |
+| 256 | 60 s  | 35.2  |  3.9  | **9×**  |
+| 256 | 120 s | 146.0 |  8.2  | **18×** |
+
+(*your numbers will vary with system load, signal characteristics, and
+artifact density: ASR's "trivial" branch is much cheaper than the
+artifact branch, and the speedup grows with both channel count and
+duration*)
 
 ---
 
@@ -64,78 +119,65 @@ roadmap as V4.
 
 The torch backend follows two simple rules:
 
-* **Stay on device.** All matmul, einsum, cumsum, indexing happens on the
-  resolved device (MPS / CUDA / CPU).
-* **Cross only when necessary.** Two operations cross back to CPU:
-  * `scipy.signal.lfilter` for the Yule-Walker IIR filter (sequential by
-    nature). V5 may replace this with a Metal parallel-scan IIR if
-    profiling demands it.
-  * `torch.linalg.eigh`, which is not yet implemented on MPS as of
-    torch 2.11. We do an explicit CPU round-trip in **float64** (rather
-    than the float32 we use on MPS), which actually improves precision.
+* **Stay on device.** All matmul, einsum, cumsum, indexing, and the
+  per-window eigh / pinv happen on the resolved device (MPS / CUDA / CPU).
+* **Cross only when necessary.** ``scipy.signal.lfilter`` (the
+  Yule-Walker IIR) is sequential and stays on CPU; we round-trip the
+  filtered signal back to the GPU after that. The optional Metal
+  kernels eliminate the previous CPU fallback for `eigh` and `pinv`.
 
-The biggest win is in `transform`: the per-window eigh loop is replaced
-by a single batched `torch.linalg.eigh` call (CPU-side on MPS for now,
-device-native on CUDA). Reconstruction matrices are batched too. The
-sequential cosine-blending loop stays Python-orchestrated because of the
-`last_R` / `last_trivial` carry, but only orchestrates — the math runs on
-device.
+Three perf tiers stack:
+
+1. **V1 — torch+MPS baseline.** Batched `torch.linalg.eigh` (CPU
+   fallback inside a single call) replaces `asrpy`'s per-window Python
+   loop. Already 6–10× over numpy.
+2. **V2 — pinv-via-eigh + skip-trivial + early-exit.** `pinv(masked) =
+   V diag(1/D⁺) Vᵀ Aᵀ` keeps the second decomposition on the same
+   eigh path; trivial windows skip the reconstruction entirely; the
+   Metal kernel exits as soon as off-diagonals are below tolerance.
+3. **V3 — float4 + double-tile block Jacobi.** Row updates use
+   ``float4`` reads/writes; for n ≥ 256 channels, we switch to a
+   double-tiled block Jacobi that keeps the active 2b × 2b sub-matrix
+   in 32 KB threadgroup memory.
+
+See [`docs/roadmap.md`](docs/roadmap.md) for the full perf-first
+versioning and what's still on the table.
 
 ---
 
 ## Numerical equivalence
 
-Tested via three tiers (see [`docs/equivalence.md`](docs/equivalence.md)
-and `tests/`):
+Tested via three tiers (`docs/equivalence.md`, `tests/`):
 
 | Tier | Data | Tolerance |
 |------|------|-----------|
-| **L1 — synthetic** | Pink-noise + 30 transient spikes, seeded RNG | numpy: bit-near `asrpy`; MPS: `rtol≤1e-4` |
+| **L1 — synthetic** | Pink-noise + transient spikes, seeded RNG | numpy: bit-near `asrpy`; MPS: `rtol ≤ 1e-4` |
 | **L2 — `asrpy` reference** | EEGLAB `test_raw.set` from `mne.datasets.testing` | same as above |
-| **L3 — realistic** (benchmark only, not CI) | `mne.datasets.sample` + private MAGSTIM 128 ch files | corr ≥ 0.999 |
+| **L3 — realistic** (benchmark only) | `mne.datasets.sample` + private MAGSTIM 128 ch files | corr ≥ 0.999 |
 
-Currently (V1, scaffold):
+Empirical residuals:
 
 * numpy backend ↔ `asrpy`: **bit-near** on synthetic data.
 * torch CPU backend ↔ `asrpy`: max abs diff ~5e-14 (float64).
-* torch MPS backend ↔ `asrpy`: max abs diff ~3e-5 (float32 cumulative).
-
----
-
-## Install
-
-This project uses [`uv`](https://github.com/astral-sh/uv).
-
-```bash
-git clone https://github.com/ramdam17/asrpy_gpu.git
-cd asrpy_gpu
-uv sync --extra torch        # core + torch
-# or, for development (asrpy reference, tests, ruff):
-uv sync --all-groups --extra torch
-```
-
-Run the tests:
-
-```bash
-uv run pytest                 # full suite (downloads MNE testing dataset)
-uv run pytest -m "not slow"   # quick subset
-```
-
-Run the benchmarks:
-
-```bash
-uv run python benchmarks/bench_calibrate.py
-uv run python benchmarks/bench_process.py
-# Results land in benchmarks/results/.
-```
+* torch MPS backend ↔ `asrpy`: max abs diff ~3e-5 to ~6e-5 (float32
+  cumulative across the pipeline).
 
 ---
 
 ## Roadmap
 
-See [`docs/roadmap.md`](docs/roadmap.md). Current scope is **V1 — Euclid +
-torch+MPS**. V2 adds Riemannian ASR (CPU numpy reference first), V3 ports
-it to MPS, V4 brings CUDA, V5 explores a Metal parallel-scan IIR.
+[`docs/roadmap.md`](docs/roadmap.md). Current state:
+
+```
+V1  — Euclid + torch+MPS baseline                            done
+V2  — MPS-native eigh + pinv + skip-trivial + early-exit     done
+V3  — float4 + hybrid block Jacobi for n ≥ 256               done
+V4  — tile-based memory access (256ch optim, more)           in flight
+V5  — lfilter on GPU (parallel-scan IIR)                     deferred
+V6  — Riemann CPU reference
+V7  — Riemann torch+MPS
+V8  — torch+CUDA
+```
 
 ## License
 
@@ -146,4 +188,4 @@ original `asrpy` authors.
 
 If you use `asrpy_gpu` in published work, please cite both the original
 ASR papers (Mullen 2015, Kothe & Jung 2016) and this fork. A
-`CITATION.cff` file will be added at the V1 release tag.
+`CITATION.cff` file will be added at the next tagged release.
